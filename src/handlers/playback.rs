@@ -44,6 +44,70 @@ mod command_state_tests {
     use super::*;
 
     #[tokio::test]
+    async fn cancelled_ready_playback_cleans_record_and_rtp() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let closed = Arc::new(AtomicUsize::new(0));
+        let count = closed.clone();
+        let router = axum::Router::new()
+            .route(
+                "/index/api/openRtpServer",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"code":0,"port":30001}))
+                }),
+            )
+            .route(
+                "/index/api/closeRtpServer",
+                axum::routing::get(move || {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"code":0,"hit":1}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let http = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (state, manager, stream) = state_with_session().await;
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let client = crate::zlm::ZlmClient::new("127.0.0.1", port, "test");
+        let (_, lease) = crate::zlm::port_guard::open_owned_rtp_server(
+            &client,
+            crate::zlm::OpenRtpServerRequest {
+                stream_id: stream.clone(),
+                port: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let guard = PlaybackStartGuard {
+            sip,
+            playback: Some(manager.clone()),
+            call_id: "missing".into(),
+            stream_id: stream.clone(),
+            rtp_lease: Some(lease),
+            armed: true,
+        };
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if manager.get(&stream).await.is_none() && closed.load(Ordering::SeqCst) == 1 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("playback cancellation leaked state or RTP");
+        http.abort();
+    }
+
+    #[tokio::test]
     async fn playback_cancelled_during_rtp_open_closes_eventual_allocation() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let entered = Arc::new(tokio::sync::Notify::new());
@@ -274,6 +338,40 @@ mod command_state_tests {
             0
         );
         assert!(manager.get(&stream).await.unwrap().paused);
+    }
+}
+
+/// Owns an established playback until its response has been prepared.
+struct PlaybackStartGuard {
+    sip: Arc<crate::sip::SipServer>,
+    playback: Option<Arc<PlaybackManager>>,
+    call_id: String,
+    stream_id: String,
+    rtp_lease: Option<crate::zlm::port_guard::RtpServerLease>,
+    armed: bool,
+}
+
+impl Drop for PlaybackStartGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let sip = self.sip.clone();
+        let playback = self.playback.clone();
+        let call_id = self.call_id.clone();
+        let stream_id = self.stream_id.clone();
+        let lease = self.rtp_lease.take();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = sip.send_session_bye_by_call_id(&call_id).await {
+                    tracing::warn!(%call_id, %stream_id, "回放启动取消后发送 BYE 失败: {}", error);
+                }
+                if let Some(playback) = playback {
+                    playback.remove(&stream_id).await;
+                }
+                drop(lease);
+            });
+        }
     }
 }
 
@@ -592,6 +690,14 @@ pub async fn playback_start(
                         .await
                     {
                         Ok((call_id, _zlm_stream_id)) => {
+                            let mut playback_guard = PlaybackStartGuard {
+                                sip: sip_server.clone(),
+                                playback: state.playback_manager.clone(),
+                                call_id: call_id.clone(),
+                                stream_id: stream_id.clone(),
+                                rtp_lease: Some(rtp_lease),
+                                armed: true,
+                            };
                             let media_ip = zlm_client.ip.clone();
                             let http_port = zlm_client.http_port;
                             let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);
@@ -643,7 +749,10 @@ pub async fn playback_start(
                             if hls_available {
                                 payload["hls"] = serde_json::json!(hls_url);
                             }
-                            rtp_lease.disarm();
+                            if let Some(lease) = playback_guard.rtp_lease.as_mut() {
+                                lease.disarm();
+                            }
+                            playback_guard.armed = false;
                             return Ok(Json(ApiResult::success(payload)));
                         }
                         Err(e) => {
