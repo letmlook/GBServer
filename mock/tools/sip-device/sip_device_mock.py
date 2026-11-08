@@ -850,8 +850,7 @@ class SipDeviceMock:
         self.config_result_delay_ms = config_result_delay_ms
         self._alarm_task: Optional[asyncio.Task] = None
         self.alarm_count = 0
-        self.rtp = RtpSender(cfg)
-        self._rtp_ssrc = 0
+        self._rtp_senders: dict[str, RtpSender] = {}
 
         self.state = DeviceState()
         self.transport: Optional[asyncio.DatagramTransport] = None
@@ -935,6 +934,9 @@ class SipDeviceMock:
     # 整个 mock 进程崩溃 —— 表现为"设备还在线（平台内存里），但一帧 RTP 都不发"，
     # 排查时极易误判成平台侧缺陷。
     def connection_lost(self, exc):
+        for sender in self._rtp_senders.values():
+            sender.stop()
+        self._rtp_senders.clear()
         if exc:
             log.warning("SIP mock 传输关闭: %s", exc)
 
@@ -1399,7 +1401,7 @@ class SipDeviceMock:
         branch = self._extract_via_branch(msg)
         from_tag = self._extract_from_tag(msg)
         to_tag = uuid.uuid4().hex[:8]
-        ssrc = f"{random.randint(0, 0xFFFFFFFF):08X}"
+        ssrc = str(random.randint(0, 0xFFFFFFFF))
         self._invite_state[call_id] = {
             "from_tag": from_tag, "to_tag": to_tag, "branch": branch,
             "cseq": invite_cseq, "started": time.time(),
@@ -1421,6 +1423,8 @@ class SipDeviceMock:
             elif _t.startswith("f=") and not f_line:
                 # 媒体描述行（国标附录 A.2.3），与 Subject 一样属于契约的一部分
                 f_line = _t
+        if ssrc_y.isascii() and ssrc_y.isdigit() and int(ssrc_y) <= 0xFFFFFFFF:
+            ssrc = ssrc_y
         log.info(
             "INVITE 收到: Subject=%s s=%s y=%s %s",
             subject or "(无)",
@@ -1477,10 +1481,17 @@ class SipDeviceMock:
             # 所以要在这里监听该端口，才能证明音频真的到达设备。
             await self._ensure_talk_receiver()
         if self.cfg.send_rtp and not is_talk:
-            dst_ip, dst_port, ssrc_hex = self._parse_platform_media(req_body)
+            dst_ip, dst_port, ssrc_y = self._parse_platform_media(req_body)
             if dst_ip and dst_port:
-                self._rtp_ssrc = int(ssrc_hex, 16) if ssrc_hex else int(ssrc, 16)
-                self.rtp.start(dst_ip, dst_port, self._rtp_ssrc)
+                if ssrc_y and (not ssrc_y.isascii() or not ssrc_y.isdigit() or int(ssrc_y) > 0xFFFFFFFF):
+                    log.warning("无效的 SDP SSRC: %s", ssrc_y)
+                    return
+                previous = self._rtp_senders.pop(call_id, None)
+                if previous:
+                    previous.stop()
+                sender = RtpSender(self.cfg)
+                if sender.start(dst_ip, dst_port, int(ssrc)):
+                    self._rtp_senders[call_id] = sender
             else:
                 log.warning(
                     "请求 SDP 里没有可用的收流地址（c=/m=），无法推流：%s",
@@ -1501,6 +1512,9 @@ class SipDeviceMock:
                 payload = build_bye(self.cfg, local, addr, cseq, call_id, make_branch(), state["from_tag"], state["to_tag"])
                 self.transport.sendto(payload, addr)
                 self._ended_by_device.add(call_id)
+                sender = self._rtp_senders.pop(call_id, None)
+                if sender:
+                    sender.stop()
                 log.info("BYE sent for call %s", call_id)
             asyncio.create_task(delayed_bye())
 
@@ -1561,7 +1575,9 @@ class SipDeviceMock:
             return
 
         # 对话有效 ⇒ 停止推流（真实设备收到 BYE 就停发 RTP）
-        self.rtp.stop()
+        sender = self._rtp_senders.pop(call_id, None)
+        if sender:
+            sender.stop()
         payload = (
             f"{SIP_VERSION} 200 OK\r\n"
             f"Via: {SIP_VERSION}/UDP {addr[0]}:{addr[1]};rport;branch={branch}\r\n"
@@ -1717,7 +1733,7 @@ class SipDeviceMock:
         """从请求 SDP 里取平台收流地址：`c=IN IP4 <ip>` / `m=video <port>` / `y=<ssrc>`。"""
         dst_ip = ""
         dst_port = 0
-        ssrc_hex = ""
+        ssrc = ""
         for line in sdp.splitlines():
             line = line.strip()
             if line.startswith("c=IN IP4 "):
@@ -1727,8 +1743,8 @@ class SipDeviceMock:
                 if len(parts) >= 2 and parts[1].isdigit():
                     dst_port = int(parts[1])
             elif line.startswith("y="):
-                ssrc_hex = line[2:].strip()
-        return dst_ip, dst_port, ssrc_hex
+                ssrc = line[2:].strip()
+        return dst_ip, dst_port, ssrc
 
     # ----- Header / XML 解析辅助 -----
 
