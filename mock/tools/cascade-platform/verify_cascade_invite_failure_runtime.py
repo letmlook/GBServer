@@ -26,7 +26,7 @@ def main():
     platform_gb = os.environ["GBSERVER_TEST_PLATFORM_GB_ID"]
     secret = os.environ["GBSERVER_TEST_ZLM_SECRET"]
     channel = "34020000001310009876"
-    stream = f"cascade_{platform_gb}_{channel}"
+    prefix = f"cascade_pull_{platform_gb}_{channel}_"
     query = urllib.parse.urlencode({"secret": secret})
 
     def rtp_servers():
@@ -34,7 +34,7 @@ def main():
         assert result.get("code") == 0, "ZLM RTP listing failed"
         return {item["stream_id"] for item in result.get("data", [])}
 
-    assert stream not in rtp_servers(), "test stream already exists"
+    baseline = rtp_servers()
     login = urllib.parse.urlencode({"username": os.environ.get("GBSERVER_TEST_USERNAME", "admin"),
                                     "password": hashlib.md5(os.environ.get("GBSERVER_TEST_PASSWORD", "admin").encode()).hexdigest()})
     token = get(BASE + "/api/user/login?" + login, post=True)["data"]["accessToken"]
@@ -42,7 +42,7 @@ def main():
     result = get(BASE + "/api/platform/channel/push?" + params, {"access-token": token})
     assert result["code"] == 0 and result["data"]["pushedCount"] == 0 and result["data"]["errors"], result
     assert any("invalid socket address" in error for error in result["data"]["errors"]), result
-    assert stream not in rtp_servers(), "cascade RTP server leaked after failed INVITE"
+    assert not {stream for stream in rtp_servers() - baseline if stream.startswith(prefix)}, "cascade RTP server leaked after failed INVITE"
     print("failed cascade INVITE reported; real ZLM RTP server removed")
 
 

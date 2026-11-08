@@ -8071,11 +8071,13 @@ f=v/1/96/1/2/1/1/0
         platform_gb_id: &str,
         channel_id: &str,
         sdp_port: u16,
+        stream_id: &str,
     ) -> Result<()> {
         self.send_platform_invite_with_timeout(
             platform_gb_id,
             channel_id,
             sdp_port,
+            stream_id,
             Duration::from_secs(15),
         )
         .await
@@ -8086,6 +8088,7 @@ f=v/1/96/1/2/1/1/0
         platform_gb_id: &str,
         channel_id: &str,
         sdp_port: u16,
+        stream_id: &str,
         timeout: Duration,
     ) -> Result<()> {
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
@@ -8181,11 +8184,7 @@ f=v/1/96/1/2/1/1/0
         )
         .await;
         self.invite_session_manager
-            .set_zlm_stream_by_call_id(
-                &call_id,
-                &format!("cascade_{}_{}", platform_gb_id, channel_id),
-                "rtp",
-            )
+            .set_zlm_stream_by_call_id(&call_id, stream_id, "rtp")
             .await;
         let (tx, rx) = oneshot::channel();
         self.pending_invites.insert(call_id.clone(), tx);
@@ -9377,6 +9376,7 @@ mod dialog_tag_tests {
                     "cancel-test",
                     "channel",
                     30001,
+                    "cascade-test-stream",
                     Duration::from_secs(30),
                 )
                 .await
@@ -9510,6 +9510,7 @@ mod dialog_tag_tests {
                 "cascade-test",
                 "channel",
                 30001,
+                "cascade-test-stream",
                 Duration::from_millis(30),
             )
             .await;

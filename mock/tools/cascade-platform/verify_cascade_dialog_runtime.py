@@ -29,7 +29,8 @@ def main():
     media = os.environ.get("GBSERVER_TEST_MEDIA") == "1"
     late = os.environ.get("GBSERVER_TEST_LATE") == "1"
     disconnected = os.environ.get("GBSERVER_TEST_DISCONNECT") == "1"
-    stream = f"cascade_{platform_gb}_{channel}"
+    prefix = f"cascade_pull_{platform_gb}_{channel}_"
+    stream = None
     query = urllib.parse.urlencode({"secret": secret})
 
     def servers():
@@ -37,7 +38,10 @@ def main():
         assert result["code"] == 0
         return {entry["stream_id"] for entry in result.get("data", [])}
 
-    assert stream not in servers(), "test stream already exists"
+    baseline = servers()
+
+    def new_streams():
+        return {item for item in servers() - baseline if item.startswith(prefix)}
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 15062))
     sock.settimeout(8)
@@ -83,8 +87,11 @@ def main():
             if late or disconnected:
                 assert f"To: {headers['to']};tag=peer123" in ack.decode()
                 assert "CSeq: 1 ACK" in ack.decode()
-                bye, _ = sock.recvfrom(65535)
-                assert bye.startswith(b"BYE "), bye[:80]
+                while True:
+                    bye, _ = sock.recvfrom(65535)
+                    if bye.startswith(b"BYE "):
+                        break
+                    assert bye.startswith(b"ACK "), bye[:80]
                 assert f"Call-ID: {headers['call-id']}" in bye.decode()
                 assert f"To: {headers['to']};tag=peer123" in bye.decode()
                 assert "CSeq: 2 BYE" in bye.decode()
@@ -134,21 +141,23 @@ def main():
         thread.join(10)
         assert len(outcome) == 1 and not isinstance(outcome[0], Exception), outcome
         if disconnected:
-            assert stream not in servers(), "disconnected request leaked RTP server"
+            assert not new_streams(), "disconnected request leaked RTP server"
             print("HTTP disconnect: accepted dialog terminated and RTP server closed")
             return
         if late:
             assert result["data"]["pushedCount"] == 0 and result["data"]["errors"], result
-            assert stream not in servers(), "timed-out INVITE leaked RTP server"
+            assert not new_streams(), "timed-out INVITE leaked RTP server"
             print("late 200 acknowledged and terminated without RTP leak")
             return
         if reject:
             assert result["data"]["pushedCount"] == 0 and any("486" in error for error in result["data"]["errors"]), result
-            assert stream not in servers(), "rejected INVITE leaked RTP server"
+            assert not new_streams(), "rejected INVITE leaked RTP server"
             print("cascade 486 rejection reported and real ZLM RTP server removed")
             return
         assert result["data"]["pushedCount"] == 1 and not result["data"]["errors"], result
-        assert stream in servers(), "accepted session has no RTP server"
+        found = new_streams()
+        assert len(found) == 1, f"expected one RTP server, found {found}"
+        stream = found.pop()
         if media:
             params = urllib.parse.urlencode({"app": "rtp", "stream": stream})
             deadline = time.monotonic() + 15
@@ -179,8 +188,8 @@ def main():
             sender.stop()
         sock.close()
         try:
-            if stream in servers():
-                params = urllib.parse.urlencode({"secret": secret, "stream_id": stream})
+            for leftover in new_streams():
+                params = urllib.parse.urlencode({"secret": secret, "stream_id": leftover})
                 get(ZLM + "/index/api/closeRtpServer?" + params)
         except Exception:
             pass
