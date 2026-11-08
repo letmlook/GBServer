@@ -534,18 +534,19 @@ impl Drop for PendingDropGuard<'_> {
     }
 }
 
-/// Cleanup owned SIP state if the cascade INVITE future is dropped mid-flight.
-struct CascadeInviteGuard {
+/// Cleanup owned SIP state if an outbound INVITE future is dropped mid-flight.
+struct OutboundInviteGuard {
     call_id: String,
     sessions: Arc<SessionManager>,
     invites: Arc<InviteSessionManager>,
     pending: Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
+    media_waiter: Option<Arc<MediaWaiterManager>>,
     socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
     config: Arc<SipConfig>,
     armed: bool,
 }
 
-impl Drop for CascadeInviteGuard {
+impl Drop for OutboundInviteGuard {
     fn drop(&mut self) {
         if !self.armed {
             return;
@@ -554,6 +555,7 @@ impl Drop for CascadeInviteGuard {
         let sessions = self.sessions.clone();
         let invites = self.invites.clone();
         let pending = self.pending.clone();
+        let media_waiter = self.media_waiter.clone();
         let socket = self.socket.clone();
         let config = self.config.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -564,6 +566,9 @@ impl Drop for CascadeInviteGuard {
                     }
                 }
                 pending.remove(&call_id);
+                if let Some(waiter) = media_waiter {
+                    waiter.cancel_by_call_id(&call_id);
+                }
                 if let Some(invite) = invites.get(&call_id).await {
                     if invite.status == InviteSessionStatus::Active {
                         if let (Some(tag), Some(socket)) =
@@ -4573,7 +4578,7 @@ impl SipServer {
                     );
                     delivery_failed = tx.send(resp.clone()).is_err();
                 }
-                if call_id.starts_with("plat_") {
+                if call_id.starts_with("plat_") || call_id.starts_with("playback_") {
                     if delivery_failed {
                         if let Some(ctx) = session_manager.get(&call_id).await {
                             session_manager.remember_rejected(ctx).await;
@@ -7717,6 +7722,16 @@ f=v/1/96/1/2/1/1/0
             .try_lease(device_id, channel_id, "playback")
             .ok_or_else(|| anyhow::anyhow!("无法分配回放 SSRC"))?;
 
+        let mut cleanup = OutboundInviteGuard {
+            call_id: call_id.clone(),
+            sessions: self.session_manager.clone(),
+            invites: self.invite_session_manager.clone(),
+            pending: self.pending_invites.clone(),
+            media_waiter: Some(self.media_waiter_manager.clone()),
+            socket: self.socket.clone(),
+            config: self.config.clone(),
+            armed: true,
+        };
         // 1. 注册 media waiter（早于发包）
         let (_waiter_key, media_rx) =
             self.media_waiter_manager()
@@ -7794,6 +7809,7 @@ f=v/1/96/1/2/1/1/0
             self.session_manager
                 .set_invite_context(&call_id, from.clone(), cseq_num, device_addr)
                 .await;
+            self.session_manager.set_invite_via(&call_id, &via).await;
             // 业务会话登记 + 立刻回填 ZLM 流标识（此处 stream_id 已知），
             // 供 BYE 时释放收流端口、以及无人观看自动关流判定使用。
             self.register_outbound_invite(
@@ -7817,6 +7833,7 @@ f=v/1/96/1/2/1/1/0
                 self.media_waiter_manager().cancel_by_call_id(&call_id);
                 self.session_manager.remove(&call_id).await;
                 self.invite_session_manager.remove(&call_id).await;
+                cleanup.armed = false;
                 return Err(error);
             }
             tracing::info!(
@@ -7841,10 +7858,14 @@ f=v/1/96/1/2/1/1/0
                 Err(_) => Err(anyhow::anyhow!("Playback INVITE timeout")),
             };
         if let Err(error) = invite_result {
+            if let Some(ctx) = self.session_manager.get(&call_id).await {
+                self.session_manager.remember_rejected(ctx).await;
+            }
             self.pending_invites.remove(&call_id);
             self.media_waiter_manager().cancel_by_call_id(&call_id);
             self.session_manager.remove(&call_id).await;
             self.invite_session_manager.remove(&call_id).await;
+            cleanup.armed = false;
             return Err(error);
         }
 
@@ -7877,6 +7898,7 @@ f=v/1/96/1/2/1/1/0
             self.session_manager.remove(&call_id).await;
             self.invite_session_manager.remove(&call_id).await;
         }
+        cleanup.armed = false;
         result
     }
 
@@ -8154,11 +8176,12 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", channel_id, server_ip, server_port);
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        let mut cleanup = CascadeInviteGuard {
+        let mut cleanup = OutboundInviteGuard {
             call_id: call_id.clone(),
             sessions: self.session_manager.clone(),
             invites: self.invite_session_manager.clone(),
             pending: self.pending_invites.clone(),
+            media_waiter: None,
             socket: self.socket.clone(),
             config: self.config.clone(),
             armed: true,
@@ -9295,6 +9318,147 @@ mod dialog_tag_tests {
     use super::*;
 
     #[tokio::test]
+    async fn cancelled_answered_playback_sends_bye_and_cleans_waiter() {
+        let state = crate::test_support::app_state().await;
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = Arc::new(SipServer::new(
+            SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        *server.socket.write().await =
+            Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        server
+            .device_manager
+            .register("device", remote.local_addr().unwrap())
+            .await;
+        let worker = server.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .send_playback_invite_and_wait(
+                    "device",
+                    "channel",
+                    "2026-01-01T00:00:00",
+                    "2026-01-01T00:01:00",
+                    "stream",
+                    30001,
+                    30,
+                )
+                .await
+        });
+        let mut buf = [0u8; 4096];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let call_id = std::str::from_utf8(&buf[..n])
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("Call-ID: "))
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(
+            server
+                .invite_session_manager
+                .mark_answered(&call_id, Some("remote"), None)
+                .await
+        );
+        task.abort();
+        let _ = task.await;
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("ACK "));
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("BYE "));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server.ssrc_manager.active_count() == 0
+                    && server.pending_invites.is_empty()
+                    && server.media_waiter_manager.active_count() == 0
+                    && server.invite_session_manager.total_count().await == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("answered playback cancellation leaked state");
+    }
+
+    #[tokio::test]
+    async fn cancelled_playback_invite_releases_waiters_and_ssrc() {
+        let state = crate::test_support::app_state().await;
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server = Arc::new(SipServer::new(
+            SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        *server.socket.write().await =
+            Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        server
+            .device_manager
+            .register("device", remote.local_addr().unwrap())
+            .await;
+        let worker = server.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .send_playback_invite_and_wait(
+                    "device",
+                    "channel",
+                    "2026-01-01T00:00:00",
+                    "2026-01-01T00:01:00",
+                    "stream",
+                    30001,
+                    30,
+                )
+                .await
+        });
+        let mut buf = [0u8; 4096];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let call_id = std::str::from_utf8(&buf[..n])
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("Call-ID: "))
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(server.ssrc_manager.active_count(), 1);
+        assert_eq!(server.media_waiter_manager.active_count(), 1);
+        task.abort();
+        let _ = task.await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server.ssrc_manager.active_count() == 0
+                    && server.pending_invites.is_empty()
+                    && server.media_waiter_manager.active_count() == 0
+                    && server.invite_session_manager.total_count().await == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled playback leaked SIP state");
+        assert!(server
+            .session_manager
+            .rejected_context(&call_id)
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
     async fn cancelled_cascade_after_answer_sends_bye() {
         let state = crate::test_support::app_state().await;
         let server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
@@ -9323,11 +9487,12 @@ mod dialog_tag_tests {
         session.status = InviteSessionStatus::Active;
         session.set_remote_tag("remote");
         server.invite_session_manager.create(session).await;
-        let guard = CascadeInviteGuard {
+        let guard = OutboundInviteGuard {
             call_id: call_id.into(),
             sessions: server.session_manager.clone(),
             invites: server.invite_session_manager.clone(),
             pending: server.pending_invites.clone(),
+            media_waiter: None,
             socket: server.socket.clone(),
             config: server.config.clone(),
             armed: true,
