@@ -212,3 +212,43 @@ test('快速关闭并重开时，先清理旧起流再发新起流', async ({ pa
   releaseFirst()
   await expect.poll(() => events.slice(0, 3)).toEqual(['start', 'stop', 'start'])
 })
+
+test('迟到流停止失败时，重开先重试停止再起流', async ({ page }) => {
+  let releaseFirst: () => void = () => {}
+  const firstPending = new Promise<void>((resolve) => { releaseFirst = resolve })
+  const events: string[] = []
+  await page.route('**/common/channel/list*', (route) => route.fulfill({ json: {
+    code: 0, msg: '成功', data: { total: 1, list: [{ id: 991, deviceId: DEVICE,
+      channelId: CHANNEL, name: '清理重试通道', status: 'ON' }] }
+  } }))
+  await page.route(`**/play/start/${DEVICE}/${CHANNEL}`, async (route) => {
+    events.push('start')
+    if (events.length === 1) await firstPending
+    await route.fulfill({ json: { code: 0, msg: '成功', data: {
+      app: 'rtp', stream: 'cleanup-retry', playUrl: 'rtsp://127.0.0.1:554/rtp/cleanup-retry'
+    } } })
+  })
+  await page.route(`**/play/stop/${DEVICE}/${CHANNEL}`, (route) => {
+    events.push('stop')
+    return route.fulfill({ json: events.filter((event) => event === 'stop').length <= 2
+      ? { code: 500, msg: '停止失败', data: null } : { code: 0, msg: '成功', data: null } })
+  })
+  await page.goto('/#/channel', { waitUntil: 'domcontentloaded' })
+  const row = page.getByRole('row', { name: /清理重试通道/ })
+  await expect(row).toBeVisible()
+  await row.getByRole('button', { name: '播放' }).click()
+  await expect.poll(() => events.length).toBe(1)
+  const dialog = page.getByRole('dialog', { name: /清理重试通道/ })
+  await dialog.getByRole('button', { name: '关闭此对话框' }).click()
+  await expect(dialog).toBeHidden()
+  await row.getByRole('button', { name: '播放' }).click()
+  await expect(dialog).toBeVisible()
+  releaseFirst()
+  await expect.poll(() => events.slice(0, 3)).toEqual(['start', 'stop', 'stop'])
+  await page.waitForTimeout(300)
+  expect(events).toEqual(['start', 'stop', 'stop'])
+  await dialog.getByRole('button', { name: '关闭此对话框' }).click()
+  await expect(dialog).toBeHidden()
+  await row.getByRole('button', { name: '播放' }).click()
+  await expect.poll(() => events.slice(0, 5)).toEqual(['start', 'stop', 'stop', 'stop', 'start'])
+})

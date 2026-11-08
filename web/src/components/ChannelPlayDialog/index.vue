@@ -455,6 +455,8 @@ let closeStopWarningShown = false
 let closeCleanupRequested = false
 let playbackTask: Promise<void> | null = null
 let openGeneration = 0
+let pendingLateCleanup: { deviceId: string; channelId: string } | null = null
+let lateCleanupRequest: Promise<void> | null = null
 
 /**
  * 协议切换：
@@ -617,6 +619,21 @@ async function onOpen() {
     try { await stopRequest } catch { return }
   }
   if (generation !== openGeneration || !props.modelValue || !props.channel) return
+  if (pendingLateCleanup) {
+    const target = pendingLateCleanup
+    if (!lateCleanupRequest) {
+      lateCleanupRequest = stopPlay(target.deviceId, target.channelId).then(() => {
+        if (pendingLateCleanup === target) pendingLateCleanup = null
+      }).finally(() => { lateCleanupRequest = null })
+    }
+    try {
+      await lateCleanupRequest
+    } catch {
+      playerStatus.value = 'error'
+      return
+    }
+  }
+  if (generation !== openGeneration || !props.modelValue || !props.channel) return
   const task = playChannel()
   playbackTask = task
   try {
@@ -671,7 +688,11 @@ async function playChannel() {
     // 起流请求还没回来，弹窗就已经被关掉了：这时后端那条 SIP 会话和 ZLM
     // 收流端口没人接管，必须立刻停掉，否则流会一直挂着。
     if (closeCleanupRequested) {
-      await stopPlay(deviceId, channelId).catch(() => {
+      const target = { deviceId, channelId }
+      pendingLateCleanup = target
+      await stopPlay(deviceId, channelId).then(() => {
+        if (pendingLateCleanup === target) pendingLateCleanup = null
+      }).catch(() => {
         if (!closeStopWarningShown) {
           closeStopWarningShown = true
           ElMessage.warning('停止命令未确认，设备可能仍在推流')
