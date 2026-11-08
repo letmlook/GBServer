@@ -26,6 +26,8 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::playback::gb_record_query));
     acc.add(routes!(crate::handlers::playback::playback_pause));
     acc.add(routes!(crate::handlers::playback::playback_resume));
+    acc.add(routes!(crate::handlers::playback::playback_recovery_list));
+    acc.add(routes!(crate::handlers::playback::playback_recovery_retry));
     acc.add(routes!(crate::handlers::playback::playback_seek));
     acc.add(routes!(crate::handlers::playback::playback_speed));
     acc.add(routes!(crate::handlers::playback::playback_start));

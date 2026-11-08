@@ -28,6 +28,7 @@ pub struct PlaybackSession {
     pub speed: f64,
     pub paused: bool,
     pub source: String,
+    pub cleanup_pending: bool,
 }
 
 fn new_playback_stream_id(device_id: &str, channel_id: &str) -> String {
@@ -42,6 +43,171 @@ fn new_playback_stream_id(device_id: &str, channel_id: &str) -> String {
 #[cfg(test)]
 mod command_state_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn admin_retry_sends_bye_and_removes_pending_record() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        let (mut state, manager, stream) = state_with_session().await;
+        let peer = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
+        let socket = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        sip.set_test_udp_socket(socket).await;
+        let mut invite = InviteSession::new(
+            "recover-call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            peer.local_addr().unwrap(),
+        );
+        invite.status = InviteSessionStatus::Active;
+        invite.set_local_dialog("local", 1);
+        invite.set_remote_tag("remote");
+        sip.invite_session_manager().create(invite).await;
+        state.sip_server = Some(sip);
+        let mut record = manager.get(&stream).await.unwrap();
+        record.call_id = Some("recover-call".into());
+        record.source = "gb28181_playback_invite".into();
+        manager.create(record.clone()).await;
+        manager.mark_cleanup_pending(record).await;
+        let app = axum::Router::new().route(
+            "/index/api/close_streams",
+            axum::routing::get(|| async { axum::Json(serde_json::json!({"code":0})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        state.zlm_client = Some(Arc::new(crate::zlm::ZlmClient::new(
+            "127.0.0.1",
+            port,
+            "test",
+        )));
+        let token = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes())
+            .create_token("admin", 60)
+            .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("access-token", token.parse().unwrap());
+        let response = playback_recovery_retry(State(state), headers, Path(stream.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(response.code, 0, "{:?}", response.msg);
+        assert_eq!(
+            response.data.as_ref().unwrap()["deviceResult"],
+            "unconfirmed"
+        );
+        let mut buf = [0u8; 2048];
+        let (n, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), peer.recv_from(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("BYE "));
+        assert!(manager.get(&stream).await.is_none());
+        http.abort();
+    }
+
+    #[tokio::test]
+    async fn recovery_endpoints_require_admin_and_list_pending_only() {
+        let (state, manager, stream) = state_with_session().await;
+        manager
+            .mark_cleanup_pending(manager.get(&stream).await.unwrap())
+            .await;
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(playback_recovery_list(
+            State(state.clone()),
+            headers.clone(),
+            Query(RecoveryListQuery::default())
+        )
+        .await
+        .is_err());
+        let keys = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        crate::dispatch_exec!(&state.pool, |p| { sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'operator', '9', '2026-01-01', '2026-01-01')").execute(p) }).unwrap();
+        crate::dispatch_exec!(&state.pool, |p| { sqlx::query("INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time) VALUES ('operator', 'x', 2, 'k', '2026-01-01', '2026-01-01')").execute(p) }).unwrap();
+        let mut normal = axum::http::HeaderMap::new();
+        normal.insert(
+            "access-token",
+            keys.create_token("operator", 60).unwrap().parse().unwrap(),
+        );
+        let list_error = playback_recovery_list(
+            State(state.clone()),
+            normal.clone(),
+            Query(RecoveryListQuery::default()),
+        )
+        .await
+        .unwrap_err();
+        let retry_error =
+            playback_recovery_retry(State(state.clone()), normal, Path(stream.clone()))
+                .await
+                .unwrap_err();
+        assert!(format!("{list_error:?}").contains("403"));
+        assert!(format!("{retry_error:?}").contains("403"));
+        let token = keys.create_token("admin", 60).unwrap();
+        headers.insert("access-token", token.parse().unwrap());
+        let result = playback_recovery_list(
+            State(state.clone()),
+            headers.clone(),
+            Query(RecoveryListQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(result.data.unwrap()["items"][0]["streamId"], stream);
+        let mut second = manager.get(&stream).await.unwrap();
+        second.stream_id = format!("{}-second", stream);
+        let second_id = second.stream_id.clone();
+        manager.mark_cleanup_pending(second).await;
+        let page = playback_recovery_list(
+            State(state.clone()),
+            headers.clone(),
+            Query(RecoveryListQuery {
+                offset: Some(1),
+                limit: Some(1),
+            }),
+        )
+        .await
+        .unwrap()
+        .0
+        .data
+        .unwrap();
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["items"][0]["streamId"], second_id);
+        let mut unavailable = state.clone();
+        unavailable.playback_manager = None;
+        assert!(playback_recovery_list(
+            State(unavailable.clone()),
+            headers.clone(),
+            Query(RecoveryListQuery::default())
+        )
+        .await
+        .is_err());
+        assert!(
+            playback_recovery_retry(State(unavailable), headers.clone(), Path(stream.clone()))
+                .await
+                .is_err()
+        );
+        let retry = playback_recovery_retry(State(state), headers, Path("not-pending".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_ne!(retry.code, 0);
+    }
+
+    #[tokio::test]
+    async fn recovery_listing_only_contains_unconfirmed_cleanup_sessions() {
+        let (_, manager, stream) = state_with_session().await;
+        let existing = manager.get(&stream).await.unwrap();
+        assert!(manager.list_cleanup_pending().await.is_empty());
+        manager.mark_cleanup_pending(existing).await;
+        let pending = manager.list_cleanup_pending().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].stream_id, stream);
+        manager.remove(&stream).await;
+        assert!(manager.list_cleanup_pending().await.is_empty());
+    }
 
     #[tokio::test]
     async fn failed_bye_restores_record_if_cancelled_before_session_insert() {
@@ -371,6 +537,7 @@ mod command_state_tests {
                 speed: 1.0,
                 paused: false,
                 source: "device".into(),
+                cleanup_pending: false,
             })
             .await;
         state.playback_manager = Some(manager.clone());
@@ -529,7 +696,7 @@ impl Drop for PlaybackStartGuard {
                     if let Some(playback) = playback { playback.remove(&stream_id).await; }
                 } else {
                     if let (Some(playback), Some(recovery)) = (playback, recovery_session) {
-                        playback.ensure_present(recovery).await;
+                        playback.mark_cleanup_pending(recovery).await;
                     }
                     tracing::error!(%call_id, %stream_id, "BYE 未发送，保留回放会话供后续重试；设备结束状态未确认");
                 }
@@ -557,12 +724,26 @@ impl PlaybackManager {
             .insert(session.stream_id.clone(), session);
     }
 
-    async fn ensure_present(&self, session: PlaybackSession) {
-        self.sessions
-            .write()
-            .await
+    async fn mark_cleanup_pending(&self, mut session: PlaybackSession) {
+        session.cleanup_pending = true;
+        let mut sessions = self.sessions.write().await;
+        sessions
             .entry(session.stream_id.clone())
+            .and_modify(|existing| existing.cleanup_pending = true)
             .or_insert(session);
+    }
+
+    async fn list_cleanup_pending(&self) -> Vec<PlaybackSession> {
+        let mut sessions: Vec<_> = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|session| session.cleanup_pending)
+            .cloned()
+            .collect();
+        sessions.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
+        sessions
     }
 
     pub async fn get(&self, stream_id: &str) -> Option<PlaybackSession> {
@@ -877,6 +1058,7 @@ pub async fn playback_start(
                                 speed: 1.0,
                                 paused: false,
                                 source: source.to_string(),
+                                cleanup_pending: false,
                             };
                             let mut playback_guard = PlaybackStartGuard {
                                 sip: sip_server.clone(),
@@ -1181,6 +1363,89 @@ pub async fn playback_seek(
         "deviceResult": {"status": "sent"},
         "message": "Playback seek command sent"
     })))
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+pub struct RecoveryListQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+/// List locally retained playback sessions whose cancellation BYE was not sent.
+#[utoipa::path(
+    get, path = "/api/playback/recovery", tag = "playback",
+    operation_id = "playback_recovery_list",
+    params(RecoveryListQuery),
+    responses((status = 200, description = "待处理回放会话"), (status = 401, description = "未鉴权"), (status = 403, description = "非管理员")),
+    security(("access_token" = [])),
+)]
+pub async fn playback_recovery_list(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<RecoveryListQuery>,
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
+    let manager = state
+        .playback_manager
+        .as_ref()
+        .ok_or_else(|| AppError::business(ErrorCode::Error500, "回放会话管理器不可用"))?;
+    let sessions = manager.list_cleanup_pending().await;
+    let total = sessions.len();
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100).clamp(1, 100);
+    let items: Vec<_> = sessions
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|s| {
+            serde_json::json!({
+                "streamId": s.stream_id, "deviceId": s.device_id, "channelId": s.channel_id,
+                "callId": s.call_id, "status": "cleanup_pending", "deviceResult": "unconfirmed"
+            })
+        })
+        .collect();
+    Ok(Json(ApiResult::success(
+        serde_json::json!({"items": items, "total": total, "offset": offset, "limit": limit}),
+    )))
+}
+
+/// Retry stopping one retained playback session; does not claim device acknowledgement.
+#[utoipa::path(
+    post, path = "/api/playback/recovery/{stream_id}/retry", tag = "playback",
+    operation_id = "playback_recovery_retry",
+    params(("stream_id" = String, Path, description = "待处理的回放流 ID")),
+    responses((status = 200, description = "重试结果"), (status = 401, description = "未鉴权"), (status = 403, description = "非管理员")),
+    security(("access_token" = [])),
+)]
+pub async fn playback_recovery_retry(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(stream_id): Path<String>,
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
+    let manager = state
+        .playback_manager
+        .as_ref()
+        .ok_or_else(|| AppError::business(ErrorCode::Error500, "回放会话管理器不可用"))?;
+    let session = manager.get(&stream_id).await.filter(|s| s.cleanup_pending);
+    let Some(session) = session else {
+        return Ok(Json(ApiResult::error("没有待处理的回放会话")));
+    };
+    let result = playback_stop(
+        State(state),
+        Path((session.device_id, session.channel_id, stream_id)),
+    )
+    .await
+    .0;
+    if result.code == 0 {
+        Ok(Json(ApiResult::success(serde_json::json!({
+            "status": "local_cleanup_complete",
+            "deviceResult": "unconfirmed",
+            "message": "本地清理已完成；设备是否执行 BYE 未确认"
+        }))))
+    } else {
+        Ok(Json(ApiResult::error(result.msg)))
+    }
 }
 
 /// GET /api/playback/stop/{device_id}/{channel_id}/{stream_id}

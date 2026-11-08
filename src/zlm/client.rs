@@ -422,6 +422,9 @@ impl ZlmClient {
 
         let resp: ApiResponse<CloseStreamsResponse> =
             self.request("/index/api/close_streams", &params).await?;
+        if resp.code != 0 {
+            return Err(anyhow!("ZLM close_streams failed (code {})", resp.code));
+        }
         Ok(resp.data.unwrap_or(CloseStreamsResponse {
             count_hit: 0,
             count_closed: 0,
@@ -1426,6 +1429,27 @@ impl ZlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn close_streams_rejects_zlm_business_error() {
+        let router = axum::Router::new().route(
+            "/index/api/close_streams",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"code": -100, "msg": "secret-test-value"}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = ZlmClient::new("127.0.0.1", port, "test");
+        let error = client
+            .close_streams(None, Some("rtp"), Some("stream"), true)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("-100"));
+        assert!(!error.to_string().contains("secret-test-value"));
+        server.abort();
+    }
 
     #[tokio::test]
     async fn request_failure_never_includes_secret_query() {

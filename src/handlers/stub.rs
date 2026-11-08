@@ -2052,6 +2052,7 @@ pub async fn cloud_record_play_path(
                             speed: 1.0,
                             paused: false,
                             source: "cloud_record".to_string(),
+                            cleanup_pending: false,
                         })
                         .await;
                 }
@@ -2201,6 +2202,7 @@ pub async fn cloud_record_load(
                             speed: 1.0,
                             paused: false,
                             source: "cloud_record".to_string(),
+                            cleanup_pending: false,
                         })
                         .await;
                 }
