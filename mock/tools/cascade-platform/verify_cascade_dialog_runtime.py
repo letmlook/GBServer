@@ -28,6 +28,7 @@ def main():
     reject = os.environ.get("GBSERVER_TEST_REJECT") == "1"
     media = os.environ.get("GBSERVER_TEST_MEDIA") == "1"
     late = os.environ.get("GBSERVER_TEST_LATE") == "1"
+    disconnected = os.environ.get("GBSERVER_TEST_DISCONNECT") == "1"
     stream = f"cascade_{platform_gb}_{channel}"
     query = urllib.parse.urlencode({"secret": secret})
 
@@ -42,6 +43,8 @@ def main():
     sock.settimeout(8)
     outcome = []
     senders = []
+    invite_received = threading.Event()
+    client_closed = threading.Event()
 
     def peer():
         try:
@@ -56,6 +59,9 @@ def main():
             response = (("SIP/2.0 486 Busy Here\r\n" if reject else "SIP/2.0 200 OK\r\n") + f"Via: {headers['via']}\r\n"
                         + f"From: {headers['from']}\r\nTo: {headers['to']};tag=peer123\r\n"
                         + f"Call-ID: {headers['call-id']}\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n")
+            if disconnected:
+                invite_received.set()
+                assert client_closed.wait(5), "HTTP client did not disconnect"
             if late:
                 time.sleep(17)
             sock.sendto(response.encode(), addr)
@@ -74,7 +80,7 @@ def main():
                 return
             ack, _ = sock.recvfrom(65535)
             assert ack.startswith(b"ACK "), ack[:80]
-            if late:
+            if late or disconnected:
                 assert f"To: {headers['to']};tag=peer123" in ack.decode()
                 assert "CSeq: 1 ACK" in ack.decode()
                 bye, _ = sock.recvfrom(65535)
@@ -82,6 +88,9 @@ def main():
                 assert f"Call-ID: {headers['call-id']}" in bye.decode()
                 assert f"To: {headers['to']};tag=peer123" in bye.decode()
                 assert "CSeq: 2 BYE" in bye.decode()
+                if disconnected:
+                    outcome.append((addr, headers))
+                    return
                 sock.sendto(response.encode(), addr)
                 repeated_ack, _ = sock.recvfrom(65535)
                 assert repeated_ack.startswith(b"ACK "), repeated_ack[:80]
@@ -110,9 +119,24 @@ def main():
         login = urllib.parse.urlencode({"username": "admin", "password": hashlib.md5(b"admin").hexdigest()})
         token = get(BASE + "/api/user/login?" + login, post=True)["data"]["accessToken"]
         params = urllib.parse.urlencode({"platformId": platform_id, "channelIdList": channel})
-        result = get(BASE + "/api/platform/channel/push?" + params, {"access-token": token})
+        if disconnected:
+            url = urllib.parse.urlsplit(BASE)
+            assert url.scheme == "http"
+            with socket.create_connection((url.hostname, url.port or 80), timeout=5) as client:
+                request = (f"GET /api/platform/channel/push?{params} HTTP/1.1\r\n"
+                           f"Host: {url.netloc}\r\naccess-token: {token}\r\nConnection: close\r\n\r\n")
+                client.sendall(request.encode())
+                assert invite_received.wait(8), "INVITE not received"
+            client_closed.set()
+            result = None
+        else:
+            result = get(BASE + "/api/platform/channel/push?" + params, {"access-token": token})
         thread.join(10)
         assert len(outcome) == 1 and not isinstance(outcome[0], Exception), outcome
+        if disconnected:
+            assert stream not in servers(), "disconnected request leaked RTP server"
+            print("HTTP disconnect: accepted dialog terminated and RTP server closed")
+            return
         if late:
             assert result["data"]["pushedCount"] == 0 and result["data"]["errors"], result
             assert stream not in servers(), "timed-out INVITE leaked RTP server"
