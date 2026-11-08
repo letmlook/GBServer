@@ -534,6 +534,72 @@ impl Drop for PendingDropGuard<'_> {
     }
 }
 
+async fn handle_abandoned_invite_200(
+    resp: &SipResponse,
+    sessions: &SessionManager,
+    socket: &UdpSocket,
+    config: &SipConfig,
+) -> bool {
+    let call_id = resp
+        .headers
+        .get("call-id")
+        .map(String::as_str)
+        .unwrap_or("");
+    let Some(ctx) = sessions.rejected_context(call_id).await else {
+        return false;
+    };
+    let (Some(from), Some(number), Some(peer), Some(to)) = (
+        ctx.from_header.as_deref(),
+        ctx.cseq_num,
+        ctx.device_addr,
+        resp.headers.get("to"),
+    ) else {
+        return false;
+    };
+    if resp.headers.get("cseq") != Some(&cseq_header(number, "INVITE")) {
+        return true;
+    }
+    let uri = format!("sip:{}@{}:{}", ctx.channel_id, peer.ip(), peer.port());
+    let via = format!(
+        "SIP/2.0/UDP {}:{};branch={};rport",
+        config.ip,
+        config.port,
+        generate_branch()
+    );
+    let ack = Parser::generate_ack(&uri, &via, from, to, call_id, &cseq_header(number, "ACK"));
+    if let Err(error) = crate::sip::transport::tcp::send_sip_out(socket, peer, &ack).await {
+        tracing::warn!(%call_id, "发送迟到应答 ACK 失败: {}", error);
+        return true;
+    }
+    if sessions.claim_late_bye(call_id).await {
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            config.ip,
+            config.port,
+            generate_branch()
+        );
+        let seq = cseq_header(number.saturating_add(1), "BYE");
+        let bye = Parser::generate_request(
+            "BYE",
+            &uri,
+            &[
+                ("Via", &via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", &seq),
+                ("Max-Forwards", "70"),
+            ],
+            None,
+        );
+        if let Err(error) = crate::sip::transport::tcp::send_sip_out(socket, peer, &bye).await {
+            tracing::warn!(%call_id, "发送迟到对话 BYE 失败: {}", error);
+            sessions.unclaim_late_bye(call_id).await;
+        }
+    }
+    true
+}
+
 pub struct SipServer {
     config: Arc<SipConfig>,
     device_manager: Arc<DeviceManager>,
@@ -4170,71 +4236,11 @@ impl SipServer {
             cseq
         );
 
-        // A successful final response can arrive after the caller timed out.
-        // ACK it and immediately terminate the now-unwanted dialog.
-        if resp.status_code() == 200 && cseq.ends_with(" INVITE") {
-            if let Some(ctx) = session_manager.rejected_context(&call_id).await {
-                if let (Some(from), Some(number), Some(peer), Some(to)) = (
-                    ctx.from_header.as_deref(),
-                    ctx.cseq_num,
-                    ctx.device_addr,
-                    resp.headers.get("to"),
-                ) {
-                    if cseq != cseq_header(number, "INVITE") {
-                        return Ok(());
-                    }
-                    let uri = format!("sip:{}@{}:{}", ctx.channel_id, peer.ip(), peer.port());
-                    let via = format!(
-                        "SIP/2.0/UDP {}:{};branch={};rport",
-                        config.ip,
-                        config.port,
-                        generate_branch()
-                    );
-                    let ack = Parser::generate_ack(
-                        &uri,
-                        &via,
-                        from,
-                        to,
-                        &call_id,
-                        &cseq_header(number, "ACK"),
-                    );
-                    if let Err(error) =
-                        crate::sip::transport::tcp::send_sip_out(socket, peer, &ack).await
-                    {
-                        tracing::warn!(%call_id, "发送迟到应答 ACK 失败: {}", error);
-                        return Ok(());
-                    }
-                    if session_manager.claim_late_bye(&call_id).await {
-                        let via = format!(
-                            "SIP/2.0/UDP {}:{};branch={};rport",
-                            config.ip,
-                            config.port,
-                            generate_branch()
-                        );
-                        let seq = cseq_header(number.saturating_add(1), "BYE");
-                        let bye = Parser::generate_request(
-                            "BYE",
-                            &uri,
-                            &[
-                                ("Via", &via),
-                                ("From", from),
-                                ("To", to),
-                                ("Call-ID", &call_id),
-                                ("CSeq", &seq),
-                                ("Max-Forwards", "70"),
-                            ],
-                            None,
-                        );
-                        if let Err(error) =
-                            crate::sip::transport::tcp::send_sip_out(socket, peer, &bye).await
-                        {
-                            tracing::warn!(%call_id, "发送迟到对话 BYE 失败: {}", error);
-                            session_manager.unclaim_late_bye(&call_id).await;
-                        }
-                    }
-                    return Ok(());
-                }
-            }
+        if resp.status_code() == 200
+            && cseq.ends_with(" INVITE")
+            && handle_abandoned_invite_200(&resp, session_manager, socket, config).await
+        {
+            return Ok(());
         }
 
         // A non-2xx final INVITE response is acknowledged within the original
@@ -4492,6 +4498,7 @@ impl SipServer {
                         resp.body.as_deref(),
                     )
                     .await;
+                let mut delivery_failed = false;
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
                     // 把整个 200 OK 响应(含 SDP)发给调用方,
                     // 方便 play/playback 流程解析设备的 m= 端口并调
@@ -4502,7 +4509,19 @@ impl SipServer {
                         call_id,
                         resp.body
                     );
-                    let _ = tx.send(resp.clone());
+                    delivery_failed = tx.send(resp.clone()).is_err();
+                }
+                if call_id.starts_with("plat_") {
+                    if delivery_failed {
+                        if let Some(ctx) = session_manager.get(&call_id).await {
+                            session_manager.remember_rejected(ctx).await;
+                        }
+                    }
+                    // Timeout may have archived the transaction after the first
+                    // check, or dropped the receiver while this response was processed.
+                    if handle_abandoned_invite_200(&resp, session_manager, socket, config).await {
+                        return Ok(());
+                    }
                 }
 
                 // GB28181 三次握手必须完整:INVITE → 200 OK → ACK。
@@ -9202,6 +9221,74 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cascade_response_after_waiter_closes_is_acked_and_terminated() {
+        let state = crate::test_support::app_state().await;
+        let server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let peer = remote.local_addr().unwrap();
+        let call_id = "plat_race_test";
+        server
+            .session_manager
+            .create(call_id, "platform", "channel", "Play")
+            .await;
+        server
+            .session_manager
+            .set_invite_context(call_id, "<sip:local>;tag=local".into(), 1, peer)
+            .await;
+        server
+            .session_manager
+            .set_invite_via(
+                call_id,
+                "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest;rport",
+            )
+            .await;
+        let (tx, rx) = oneshot::channel();
+        drop(rx);
+        server.pending_invites.insert(call_id.into(), tx);
+        let mut response = SipResponse::new(200);
+        response.headers.insert("call-id".into(), call_id.into());
+        response.headers.insert("cseq".into(), "1 INVITE".into());
+        response
+            .headers
+            .insert("to".into(), "<sip:remote>;tag=remote".into());
+        SipServer::handle_response(
+            response,
+            &server.session_manager,
+            &server.invite_session_manager,
+            &server.talk_manager,
+            &server.pending_invites,
+            &None,
+            &server.pending_request_manager,
+            &server.send_rtp_manager,
+            &None,
+            &server.renewal_failures,
+            &server.media_waiter_manager,
+            &socket,
+            &server.config,
+        )
+        .await
+        .unwrap();
+        let mut buf = [0u8; 4096];
+        let (length, _) =
+            tokio::time::timeout(Duration::from_millis(500), remote.recv_from(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(std::str::from_utf8(&buf[..length])
+            .unwrap()
+            .starts_with("ACK "));
+        let (length, _) =
+            tokio::time::timeout(Duration::from_millis(500), remote.recv_from(&mut buf))
+                .await
+                .expect("BYE missing")
+                .unwrap();
+        assert!(std::str::from_utf8(&buf[..length])
+            .unwrap()
+            .starts_with("BYE "));
+    }
 
     #[tokio::test]
     async fn cascade_invite_timeout_releases_session_and_ssrc() {
