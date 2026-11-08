@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { apiPath } from '../test-helpers/api-path'
 
 const device = '34020000001320000991'
 const channel = '34020000001310000991'
@@ -61,14 +62,14 @@ test('切换片段前停止旧会话，停止失败时保留旧会话', async ({
   await page.getByRole('row', { name: /片段乙/ }).click()
   await expect.poll(() => stopCount).toBe(1)
   await expect(page.locator('.player-header')).toContainText('片段甲')
-  expect(events).toEqual(['start', `/dev-api/playback/stop/${device}/${channel}/stream-1`])
+  expect(events).toEqual(['start', apiPath(`/playback/stop/${device}/${channel}/stream-1`)])
   await page.getByRole('row', { name: /片段乙/ }).click()
   await expect.poll(() => events.length).toBe(4)
-  expect(events[2]).toBe(`/dev-api/playback/stop/${device}/${channel}/stream-1`)
+  expect(events[2]).toBe(apiPath(`/playback/stop/${device}/${channel}/stream-1`))
   expect(events[3]).toBe('start')
   await page.getByRole('button', { name: '停止', exact: true }).click()
   await expect.poll(() => events.length).toBe(5)
-  expect(events[4]).toBe('/dev-api/playback/stop/other-device/other-channel/stream-2')
+  expect(events[4]).toBe(apiPath('/playback/stop/other-device/other-channel/stream-2'))
 })
 
 for (const delayed of [false, true]) {
@@ -89,7 +90,7 @@ for (const delayed of [false, true]) {
     })
     await page.route('**/playback/stop/**', (route) => {
       stopCount++
-      expect(new URL(route.request().url()).pathname).toBe(`/dev-api/playback/stop/${device}/${channel}/leave-stream`)
+      expect(new URL(route.request().url()).pathname).toBe(apiPath(`/playback/stop/${device}/${channel}/leave-stream`))
       return route.fulfill({ json: { code: 0, msg: '成功', data: null } })
     })
     await page.goto('/#/playback', { waitUntil: 'domcontentloaded' })

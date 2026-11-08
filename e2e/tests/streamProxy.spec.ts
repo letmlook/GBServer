@@ -17,7 +17,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 
-const ZLM_API = 'http://127.0.0.1:8080/index/api';
+const ZLM_API = `${(process.env.E2E_ZLM_BASE_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, '')}/index/api`;
+const ZLM_RTMP = (process.env.E2E_ZLM_RTMP_URL ?? 'rtmp://127.0.0.1:1935').replace(/\/$/, '');
 const ZLM_SECRET = 'EWHpCV2W2SYa8SnpE2whVlUUlJJKhaiw';
 const SRC_APP = 'live';
 const SRC_STREAM = `e2eProxySrc`;
@@ -61,7 +62,7 @@ test.describe.serial('Stream proxy page (/streamProxy)', () => {
         '-hide_banner', '-loglevel', 'error', '-re',
         '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=15',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-g', '15',
-        '-f', 'flv', `rtmp://127.0.0.1:1935/${SRC_APP}/${SRC_STREAM}`
+        '-f', 'flv', `${ZLM_RTMP}/${SRC_APP}/${SRC_STREAM}`
       ],
       { stdio: 'ignore' }
     );

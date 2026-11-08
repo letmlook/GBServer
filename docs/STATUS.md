@@ -4,6 +4,13 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：Docker Desktop Linux/ARM64 的 release 后端容器、隔离 SQLite、独立
+ZLM 和 RTP SIP Mock（含自动报警）下，完整 Chromium 套件 92/92 通过，包含新录像、
+FLV、WebRTC 和代理页面；WebRTC ICE connected、解码 3 帧。首次运行 89 通过、3 失败，
+原因是回放测试将开发前缀 `/dev-api` 写死，生产同源部署实际使用 `/api`；改为读取
+`E2E_API_PREFIX` 后完整重跑通过。代理用例新增隔离 ZLM/RTMP 地址覆盖，避免触碰已有
+节点。测试有模拟 HTTP 响应的场景，且不替代目标 Linux 主机和真机验收。
+
 2026-11-08：修正 `scripts/dialect_smoke.py` 的验收判定：CSV 验证文本表头，
 不可用的测试 RTSP 源仅在 ZLM 返回 DESCRIBE 404 时算预期结果，其他失败返回非零
 退出码。定向测试 3/3 通过；隔离 SQLite、PostgreSQL 16、MySQL 8 与真实 ZLM
