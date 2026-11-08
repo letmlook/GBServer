@@ -4,6 +4,13 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：在隔离 SQLite、PostgreSQL 16、MySQL 8 数据库上以同一当前后端二进制
+分别运行 `scripts/dialect_smoke.py`；三者均为 100 项 OK、5 项 BAD，失败集合一致：
+CSV 被脚本按 JSON 判错，以及 proxy/start、push/start、push/stop、media_server/check
+因本轮有意把 ZLM 地址设为不可达而失败。脚本对 BAD 项仍返回退出码 0，故以输出逐项
+判定，不能仅凭退出码称全通过；本轮也未覆盖三库各自的实际媒体路径。临时数据库和
+MySQL 容器已清理，目标 Linux 主机与真机仍待验收。
+
 2026-11-08：Docker Desktop Linux/ARM64 的 release 后端容器、独立 ZLM 容器及
 SIP RTP Mock 执行 cloudRecord、playUrls 和 webrtcMedia 的 Chromium 用例，5/5
 通过；新 MP4 为 109266 字节，Range 播放及删除通过，FLV 可拉取，WebRTC ICE
