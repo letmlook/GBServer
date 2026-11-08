@@ -1809,6 +1809,13 @@ bash scripts/dialect-migrate/run.sh
 > 变成流水线**第 7 步门禁**（不合规即 exit 1）。**本条仍未验证**：门禁加上了，
 > 但「整条流水线重跑能否得到与当前 HEAD 等价的结果」依旧没跑过。
 
+2026-11-08 在 `338bf7f` 的隔离 worktree 复现：脚本首先因 `$BASE` 紧邻中文括号
+被 shell 解析成错误变量而退出；已改为 `${BASE}`，并移除掩盖基线检出失败的
+`|| true`。修正后基线检出和转换步骤执行到第 4 步，但 `cargo test --lib
+dialect_guard` 编译失败（报告 467 个错误），因此流水线仍未通过，不能认为产物与
+当前代码等价。无效基线会立即失败；复现日志为本机临时文件
+`/tmp/gbserver-dialect-repro-338bf7f.log`。
+
 **⑥ 已知非缺陷（不算缺陷，但别当回归查）** —— 三方言冒烟各有 **5 项**失败，
 **失败项集合三方言完全一致**：CSV 导出不是 JSON（E1）、
 `proxy/start` / `push/start` / `push/stop` / `media_server/check` 全部是

@@ -37,8 +37,8 @@ FILES=(
   src/test_support.rs src/zlm/media_node.rs
 )
 
-echo "==> 0. 回到改造前基线（$BASE）"
-git checkout "$BASE" -- src/ || true
+echo "==> 0. 回到改造前基线（${BASE}）"
+git checkout "$BASE" -- src/
 
 echo "==> 1. cfg 方言分支 → 运行期按 pool 分发"
 # 只转换**完整方言集合**的分支组（缺一方言的会跳过并打印出来，交人工处理）。
