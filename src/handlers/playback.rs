@@ -44,6 +44,107 @@ mod command_state_tests {
     use super::*;
 
     #[tokio::test]
+    async fn cancelled_ready_playback_retains_session_when_bye_never_sends() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        let (state, manager, stream) = state_with_session().await;
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let mut session = InviteSession::new(
+            "failed-call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            "127.0.0.1:15060".parse().unwrap(),
+        );
+        session.status = InviteSessionStatus::Active;
+        session.set_local_dialog("local", 1);
+        session.set_remote_tag("remote");
+        sip.invite_session_manager().create(session).await;
+        let guard = PlaybackStartGuard {
+            sip: sip.clone(),
+            playback: Some(manager.clone()),
+            call_id: "failed-call".into(),
+            stream_id: stream.clone(),
+            rtp_lease: None,
+            armed: true,
+        };
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert!(
+            manager.get(&stream).await.is_some(),
+            "unconfirmed dialog must remain recoverable"
+        );
+        assert!(sip
+            .invite_session_manager()
+            .get("failed-call")
+            .await
+            .unwrap()
+            .is_active());
+        assert_eq!(
+            sip.invite_session_manager()
+                .get("failed-call")
+                .await
+                .unwrap()
+                .invite_cseq,
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_ready_playback_retries_bye_after_socket_recovers() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        let (state, manager, stream) = state_with_session().await;
+        let remote = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let mut session = InviteSession::new(
+            "retry-call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            remote.local_addr().unwrap(),
+        );
+        session.status = InviteSessionStatus::Active;
+        session.set_local_dialog("local", 1);
+        session.set_remote_tag("remote");
+        sip.invite_session_manager().create(session).await;
+        let guard = PlaybackStartGuard {
+            sip: sip.clone(),
+            playback: Some(manager.clone()),
+            call_id: "retry-call".into(),
+            stream_id: stream.clone(),
+            rtp_lease: None,
+            armed: true,
+        };
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        sip.set_test_udp_socket(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap())
+            .await;
+        let mut buf = [0u8; 2048];
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            remote.recv_from(&mut buf),
+        )
+        .await
+        .expect("BYE was not retried")
+        .unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("BYE "));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while manager.get(&stream).await.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn cancelled_ready_playback_cleans_record_and_rtp() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let closed = Arc::new(AtomicUsize::new(0));
@@ -363,11 +464,23 @@ impl Drop for PlaybackStartGuard {
         let lease = self.rtp_lease.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                if let Err(error) = sip.send_session_bye_by_call_id(&call_id).await {
-                    tracing::warn!(%call_id, %stream_id, "回放启动取消后发送 BYE 失败: {}", error);
+                let mut sent = false;
+                for (attempt, delay_ms) in [100_u64, 300, 0].into_iter().enumerate() {
+                    match sip.send_session_bye_by_call_id(&call_id).await {
+                        Ok(_) => { sent = true; break; }
+                        Err(error) => {
+                            tracing::warn!(%call_id, %stream_id, attempt = attempt + 1, "回放启动取消后发送 BYE 失败: {}", error);
+                            let active = sip.invite_session_manager().get(&call_id).await.is_some_and(|session| session.is_active());
+                            if !active { break; }
+                            if delay_ms > 0 { tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await; }
+                        }
+                    }
                 }
-                if let Some(playback) = playback {
-                    playback.remove(&stream_id).await;
+                let active = sip.invite_session_manager().get(&call_id).await.is_some_and(|session| session.is_active());
+                if sent || !active {
+                    if let Some(playback) = playback { playback.remove(&stream_id).await; }
+                } else {
+                    tracing::error!(%call_id, %stream_id, "BYE 未发送，保留回放会话供后续重试；设备结束状态未确认");
                 }
                 drop(lease);
             });

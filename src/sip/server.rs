@@ -708,6 +708,11 @@ pub struct SipServer {
 }
 
 impl SipServer {
+    #[cfg(test)]
+    pub(crate) async fn set_test_udp_socket(&self, socket: UdpSocket) {
+        *self.socket.write().await = Some(Arc::new(socket));
+    }
+
     pub fn new(config: SipConfig, pool: Pool, sqlite_max_devices: Option<usize>) -> Self {
         let ssrc_manager = Arc::new(SsrcManager::new(&config.device_id));
         let nat_helper = Arc::new(NatHelper::new(
