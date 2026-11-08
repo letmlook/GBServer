@@ -52,7 +52,7 @@ test.describe('Operations pages', () => {
     // 资源统计：设备总数/在线（本环境至少有 2 个设备）
     const rows = page.locator('.el-table__row');
     await expect(rows.first()).toBeVisible();
-    await expect(page.locator('.el-table')).toContainText('/');
+    await expect(page.locator('.el-card', { hasText: '资源统计' }).locator('.el-table')).toContainText('/');
   });
 
   test('历史日志导出：?format=csv 返回真正的 CSV 附件', async ({ page }) => {
