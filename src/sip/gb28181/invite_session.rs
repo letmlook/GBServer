@@ -338,6 +338,7 @@ impl crate::state::StreamState for InviteSession {
 
 pub struct InviteSessionManager {
     sessions: Arc<RwLock<HashMap<String, InviteSession>>>,
+    leases: std::sync::Mutex<HashMap<String, super::ssrc::SsrcLease>>,
     /// E1: 可选 StateStore，让活跃会话在多节点之间共享
     state_store: Option<Arc<crate::state_store::StateStore>>,
 }
@@ -346,6 +347,7 @@ impl InviteSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            leases: std::sync::Mutex::new(HashMap::new()),
             state_store: None,
         }
     }
@@ -378,7 +380,28 @@ impl InviteSessionManager {
         let call_id = session.call_id.clone();
         // E1: 同步 StateStore
         self.sync_to_store(&session);
-        self.sessions.write().await.insert(call_id.clone(), session);
+        let mut sessions = self.sessions.write().await;
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&call_id);
+        sessions.insert(call_id.clone(), session);
+        call_id
+    }
+
+    pub async fn create_owned(
+        &self,
+        session: InviteSession,
+        lease: super::ssrc::SsrcLease,
+    ) -> String {
+        let call_id = session.call_id.clone();
+        self.sync_to_store(&session);
+        let mut sessions = self.sessions.write().await;
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(call_id.clone(), lease);
+        sessions.insert(call_id.clone(), session);
         call_id
     }
 
@@ -436,6 +459,12 @@ impl InviteSessionManager {
             return;
         }
         guard.insert(session.call_id.clone(), session.clone());
+        if session.status == InviteSessionStatus::Terminated {
+            self.leases
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&session.call_id);
+        }
         // E1: 同步 StateStore
         self.sync_to_store(session);
     }
@@ -445,7 +474,12 @@ impl InviteSessionManager {
         if let Some(ref store) = self.state_store {
             store.remove_invite_session(call_id);
         }
-        self.sessions.write().await.remove(call_id)
+        let mut sessions = self.sessions.write().await;
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(call_id);
+        sessions.remove(call_id)
     }
 
     /// 收到 200 OK 后回填对端 tag / 应答 SDP，并把会话置为 `Active`。
@@ -614,6 +648,10 @@ impl InviteSessionManager {
             }
             true
         });
+        let mut leases = self.leases.lock().unwrap_or_else(|e| e.into_inner());
+        for call_id in &removed {
+            leases.remove(call_id);
+        }
 
         // E1: 同步删除 StateStore 中的过期会话
         if let Some(ref store) = self.state_store {
@@ -632,6 +670,12 @@ impl InviteSessionManager {
                 return;
             }
             session.status = status;
+            if session.status == InviteSessionStatus::Terminated {
+                self.leases
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(call_id);
+            }
             session.last_activity = Utc::now();
             // E1: 同步 StateStore
             self.sync_to_store(session);
@@ -711,6 +755,77 @@ pub fn build_playback_sdp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn owned_ssrc_is_released_on_termination_and_removal() {
+        let allocator = Arc::new(super::super::ssrc::SsrcManager::new("34020000002000000001"));
+        let manager = InviteSessionManager::new();
+        let peer = "127.0.0.1:15060".parse().unwrap();
+        for call_id in ["terminated", "removed"] {
+            let lease = allocator
+                .try_lease("device", "channel", "playback")
+                .unwrap();
+            let session =
+                InviteSession::new(call_id, "device", "channel", StreamType::Playback, peer);
+            manager.create_owned(session, lease).await;
+        }
+        assert_eq!(allocator.active_count(), 2);
+        manager
+            .update_status("terminated", InviteSessionStatus::Terminated)
+            .await;
+        assert_eq!(allocator.active_count(), 1);
+        manager.remove("removed").await;
+        assert_eq!(allocator.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_snapshot_does_not_keep_lease_after_terminal_update() {
+        let allocator = Arc::new(super::super::ssrc::SsrcManager::new("34020000002000000001"));
+        let manager = InviteSessionManager::new();
+        let lease = allocator
+            .try_lease("device", "channel", "playback")
+            .unwrap();
+        let session = InviteSession::new(
+            "call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            "127.0.0.1:5060".parse().unwrap(),
+        );
+        manager.create_owned(session, lease).await;
+        let snapshot = manager.get("call").await.unwrap();
+        let mut ended = snapshot.clone();
+        ended.status = InviteSessionStatus::Terminated;
+        manager.update(&ended).await;
+        assert_eq!(allocator.active_count(), 0);
+        assert_eq!(snapshot.call_id, "call");
+    }
+
+    #[tokio::test]
+    async fn terminate_and_purge_release_owned_ssrc() {
+        let allocator = Arc::new(super::super::ssrc::SsrcManager::new("34020000002000000001"));
+        let manager = InviteSessionManager::new();
+        for call_id in ["terminate", "purge"] {
+            let lease = allocator
+                .try_lease("device", "channel", "playback")
+                .unwrap();
+            let mut session = InviteSession::new(
+                call_id,
+                "device",
+                "channel",
+                StreamType::Playback,
+                "127.0.0.1:5060".parse().unwrap(),
+            );
+            if call_id == "purge" {
+                session.status = InviteSessionStatus::Terminating;
+            }
+            manager.create_owned(session, lease).await;
+        }
+        manager.terminate("terminate").await;
+        assert_eq!(allocator.active_count(), 1);
+        manager.purge_expired(-1).await;
+        assert_eq!(allocator.active_count(), 0);
+    }
 
     #[tokio::test]
     async fn playback_cseq_reservation_is_unique_and_rejects_closed_dialog() {
@@ -901,6 +1016,10 @@ impl InviteSessionManager {
             let old = session.clone();
             session.status = InviteSessionStatus::Terminated;
             session.last_activity = Utc::now();
+            self.leases
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(call_id);
             return Some(old);
         }
         None
@@ -927,6 +1046,11 @@ impl InviteSessionManager {
             }
             true
         });
+
+        let mut leases = self.leases.lock().unwrap_or_else(|e| e.into_inner());
+        for call_id in &removed {
+            leases.remove(call_id);
+        }
 
         removed
     }

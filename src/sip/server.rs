@@ -335,11 +335,6 @@ pub(crate) fn build_play_ssrc(device_id: &str) -> String {
     build_ssrc(0, device_id)
 }
 
-/// 回放 SSRC（前缀 1）。
-pub(crate) fn build_playback_ssrc(device_id: &str) -> String {
-    build_ssrc(1, device_id)
-}
-
 fn new_playback_call_id(device_id: &str) -> String {
     format!("playback_{}_{}", device_id, uuid::Uuid::new_v4().simple())
 }
@@ -6931,6 +6926,7 @@ f=v/1/96/1/2/1/1/0
         invite_cseq: u32,
         media_port: u16,
         ssrc: Option<&str>,
+        lease: Option<crate::sip::gb28181::ssrc::SsrcLease>,
     ) {
         let mut session = crate::sip::gb28181::invite_session::InviteSession::new(
             call_id,
@@ -6943,7 +6939,13 @@ f=v/1/96/1/2/1/1/0
         session.set_local_dialog(from_tag, invite_cseq);
         session.media_port = media_port;
         session.ssrc = ssrc.map(|s| s.to_string());
-        self.invite_session_manager.create(session).await;
+        if let Some(lease) = lease {
+            self.invite_session_manager
+                .create_owned(session, lease)
+                .await;
+        } else {
+            self.invite_session_manager.create(session).await;
+        }
     }
 
     /// 旧 fire-and-forget 接口（保留兼容）
@@ -6998,7 +7000,7 @@ f=v/1/96/1/2/1/1/0
 
         // SSRC 统一由 `build_play_ssrc` 生成（10 位：1 位类型 + 设备号前 9 位）。
         // 此处原先是 `format!("0{:0>9}0", …)`，多补了一个尾 0 ⇒ 11 位，
-        // 与 SsrcManager / build_playback_ssrc 的口径不一致，同一个设备在
+        // 与 SsrcManager 的口径不一致，同一个设备在
         // 不同路径会拿到不同长度的 SSRC。
         let ssrc_str = ssrc
             .map(|s| s.to_string())
@@ -7066,6 +7068,7 @@ f=v/1/96/1/2/1/1/0
             1,
             media_port,
             Some(ssrc_str.as_str()),
+            None,
         )
         .await;
 
@@ -7415,7 +7418,11 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port
         );
 
-        let ssrc = build_playback_ssrc(device_id);
+        let lease = self
+            .ssrc_manager
+            .try_lease(device_id, channel_id, "playback")
+            .ok_or_else(|| anyhow::anyhow!("无法分配回放 SSRC"))?;
+        let ssrc = lease.ssrc().to_string();
         let sdp = build_playback_sdp(
             &self.config.ip,
             media_port,
@@ -7470,6 +7477,7 @@ f=v/1/96/1/2/1/1/0
             1,
             media_port,
             Some(ssrc.as_str()),
+            Some(lease),
         )
         .await;
         if let Err(error) = self.send_request_to(device_addr, &message).await {
@@ -7518,6 +7526,11 @@ f=v/1/96/1/2/1/1/0
             .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
 
+        let lease = self
+            .ssrc_manager
+            .try_lease(device_id, channel_id, "playback")
+            .ok_or_else(|| anyhow::anyhow!("无法分配回放 SSRC"))?;
+
         // 1. 注册 media waiter（早于发包）
         let (_waiter_key, media_rx) =
             self.media_waiter_manager()
@@ -7532,7 +7545,7 @@ f=v/1/96/1/2/1/1/0
             // 统一用 10 位 SSRC（前缀 1 = 回放）；此前这里是 11 位的
             // "1" + id9 + "0"，且算出来后并没有写进 SDP 的 y=
             // （y= 一直是硬编码的 0100000001）。
-            let ssrc = build_playback_ssrc(device_id);
+            let ssrc = lease.ssrc().to_string();
             // 本地 tag 必须留存：BYE 的 From 头要与 INVITE 完全一致
             // （此前这里 `generate_tag()` 随用随弃，BYE 只能另生成一个
             // 新 tag，设备匹配不到对话 → 481）。
@@ -7607,6 +7620,7 @@ f=v/1/96/1/2/1/1/0
                 cseq_num,
                 media_port,
                 Some(ssrc.as_str()),
+                Some(lease),
             )
             .await;
             self.invite_session_manager
@@ -7798,6 +7812,7 @@ f=v/1/96/1/2/1/1/0
             cseq_num,
             media_port,
             Some(ssrc.as_str()),
+            None,
         )
         .await;
         self.invite_session_manager

@@ -1,12 +1,36 @@
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SsrcAllocation {
+    allocation_id: uuid::Uuid,
     pub ssrc: String,
     pub device_id: String,
     pub channel_id: String,
     pub stream_type: String,
+}
+
+/// Exclusive ownership of one allocation, independent of session snapshots.
+pub struct SsrcLease {
+    manager: Arc<SsrcManager>,
+    allocation: SsrcAllocation,
+}
+
+impl SsrcLease {
+    pub fn ssrc(&self) -> &str {
+        &self.allocation.ssrc
+    }
+}
+
+impl Drop for SsrcLease {
+    fn drop(&mut self) {
+        self.manager
+            .allocations
+            .remove_if(&self.allocation.ssrc, |_, current| {
+                current.allocation_id == self.allocation.allocation_id
+            });
+    }
 }
 
 pub struct SsrcManager {
@@ -43,6 +67,29 @@ impl SsrcManager {
         channel_id: &str,
         stream_type: &str,
     ) -> Option<String> {
+        self.allocate_entry(device_id, channel_id, stream_type)
+            .map(|allocation| allocation.ssrc)
+    }
+
+    pub fn try_lease(
+        self: &Arc<Self>,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: &str,
+    ) -> Option<SsrcLease> {
+        self.allocate_entry(device_id, channel_id, stream_type)
+            .map(|allocation| SsrcLease {
+                manager: self.clone(),
+                allocation,
+            })
+    }
+
+    fn allocate_entry(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: &str,
+    ) -> Option<SsrcAllocation> {
         // 类型位：0 实时 / 1 回放 / 2 下载 / 4 广播(含对讲)
         let type_digit = match stream_type.to_ascii_lowercase().as_str() {
             "playback" | "history" | "play_back" => '1',
@@ -60,13 +107,15 @@ impl SsrcManager {
             if let dashmap::mapref::entry::Entry::Vacant(entry) =
                 self.allocations.entry(ssrc.clone())
             {
-                entry.insert(SsrcAllocation {
+                let allocation = SsrcAllocation {
+                    allocation_id: uuid::Uuid::new_v4(),
                     ssrc: ssrc.clone(),
                     device_id: device_id.to_string(),
                     channel_id: channel_id.to_string(),
                     stream_type: stream_type.to_string(),
-                });
-                return Some(ssrc);
+                };
+                entry.insert(allocation.clone());
+                return Some(allocation);
             }
         }
         None
@@ -126,6 +175,21 @@ impl SsrcManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lease_drop_releases_only_its_own_allocation() {
+        let manager = std::sync::Arc::new(SsrcManager::new("34020000002000000001"));
+        let lease = manager.try_lease("old", "channel", "playback").unwrap();
+        let ssrc = lease.ssrc().to_string();
+        manager.release(&ssrc).unwrap();
+        manager.counter.store(1, Ordering::Relaxed);
+        let replacement = manager.try_lease("new", "channel", "playback").unwrap();
+        assert_eq!(replacement.ssrc(), ssrc);
+        drop(lease);
+        assert_eq!(manager.get(&ssrc).unwrap().device_id, "new");
+        drop(replacement);
+        assert!(manager.get(&ssrc).is_none());
+    }
 
     #[test]
     fn allocation_never_overwrites_active_ssrc_and_reuses_released_slot() {
