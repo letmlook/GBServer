@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from verify_playback_control_dialog_runtime import DEVICE_ID, HTTP, MOCK, api
+from verify_playback_control_dialog_runtime import BASE, DEVICE_ID, HTTP, MOCK, api
 from verify_concurrent_playback_runtime import media_count
 
 
@@ -26,7 +27,7 @@ def rtp_servers():
     return {item["stream_id"] for item in result.get("data", [])}
 
 
-def run_case(token, status, send_rtp, auto_bye):
+def run_case(token, status, send_rtp, auto_bye, disconnect=False):
     with tempfile.TemporaryDirectory() as temp:
         with (Path(temp) / "mock.log").open("wb+") as output:
             args = [sys.executable, str(MOCK), "--server", "127.0.0.1:5060",
@@ -59,7 +60,35 @@ def run_case(token, status, send_rtp, auto_bye):
                 channel = next(row["channelId"] for row in listing["data"]["list"] if row["deviceId"] == DEVICE_ID)
                 period = urllib.parse.urlencode({"startTime": "2026-10-18T10:00:00", "endTime": "2026-10-18T10:01:00"})
                 baseline = rtp_servers()
-                result = api(f"/api/playback/start/{DEVICE_ID}/{channel}?{period}", token, timeout=40)
+                path = f"/api/playback/start/{DEVICE_ID}/{channel}?{period}"
+                if disconnect:
+                    url = urllib.parse.urlsplit(BASE)
+                    assert url.scheme == "http", "disconnect test needs an HTTP backend"
+                    with socket.create_connection((url.hostname, url.port or 80), timeout=5) as client:
+                        client.sendall((f"GET {path} HTTP/1.1\r\nHost: {url.netloc}\r\n"
+                                        f"access-token: {token}\r\nConnection: close\r\n\r\n").encode())
+                        deadline = time.monotonic() + 8
+                        while time.monotonic() < deadline and not (rtp_servers() - baseline):
+                            time.sleep(0.1)
+                        assert rtp_servers() - baseline, "request did not allocate an RTP server"
+                        while time.monotonic() < deadline:
+                            output.flush()
+                            output.seek(0)
+                            if "INVITE 200 OK sent" in output.read().decode(errors="replace"):
+                                break
+                            time.sleep(0.1)
+                        else:
+                            raise AssertionError("request did not establish SIP dialog")
+                    disconnected_at = time.monotonic()
+                    deadline = disconnected_at + 25
+                    while time.monotonic() < deadline and (rtp_servers() - baseline):
+                        time.sleep(0.2)
+                    assert not (rtp_servers() - baseline), "disconnected request leaked RTP server"
+                    assert bye_report.exists() and json.loads(bye_report.read_text())["valid"] >= 1, "disconnected request did not terminate SIP dialog"
+                    elapsed = time.monotonic() - disconnected_at
+                    print(f"playback HTTP disconnect without media: RTP and SIP cleanup verified after {elapsed:.1f}s")
+                    return
+                result = api(path, token, timeout=40)
                 if status != 200 or not send_rtp:
                     assert result["code"] != 0, result
                     if status != 200:
@@ -114,6 +143,7 @@ def main():
     run_case(token, 486, False, 0)
     run_case(token, 200, False, 0)
     run_case(token, 200, True, 12)
+    run_case(token, 200, False, 0, disconnect=True)
 
 
 if __name__ == "__main__":
