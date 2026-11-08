@@ -4,6 +4,17 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08，基线 `986f762`：`web/npm run build` 通过；隔离 SQLite 后端直接提供
+生产构建页面，Chromium 的 smoke、dashboard、deviceControl、channelPlayStop 共
+32/32 通过。设备控制与播放弹窗部分用例使用模拟 HTTP 响应，不能证明真实设备或
+媒体播放。以初始化 SQL 创建隔离 PostgreSQL 16 库和临时 MySQL 8 容器，显式运行
+`postgres_jt1078`、`postgres_device_lookup`、`postgres_platform_channel`、
+`mysql_catalog_channel`、`mysql_platform_channel` 的 ignored 专项，9/9 通过；
+临时库及容器已清理。这不等同于三方言完整 API 冒烟。首次尝试未初始化 MySQL 表，
+因缺表失败；导入两套初始化 SQL 后重跑通过。`docker compose ps` 因当前环境未提供
+`GBSERVER_JWT_SECRET` 和 `GBSERVER_SIP_ADVERTISE_IP` 无法解析配置；本轮未做目标
+Linux Compose 或 GB28181 真机验收。真实 ZLM + Mock 的最终媒体/录像浏览器闭环仍待复验。
+
 2026-11-08：回放流标识和 SIP Call-ID 改用独立 UUID，避免同秒或同毫秒请求复用标识；前缀保持兼容。八线程分别生成 10000 个流标识和 Call-ID 无重复；隔离 SQLite + 真实 ZLM + SIP Mock 的单路回放、控制、定位和 BYE 通过。相同设备并发回放的 SSRC 与媒体链路仍需专项验证，真机未验。
 
 同日补充：SSRC 分配器改为原子占位并跳过已占用及超出 RTP u32 范围的编号，容量耗尽时返回错误；级联 INVITE 发送失败时释放本次分配。回放 INVITE 已使用独立编号，并在会话终止或删除时释放，凭据可防止误释放已复用的编号。隔离 SQLite 后端、SIP Mock 和真实 ZLM 已验证同设备两路并发回放出流，停止一路后另一路流和对话仍在。SSRC 查询现返回活动直播 INVITE 的实际编号，不再创建无主分配，无活动直播时返回业务错误；两种接口入口已在 Mock/ZLM 环境验证。级联成功会话释放和回放任务取消清理仍未完善，真机待验证。
