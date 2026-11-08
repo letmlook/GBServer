@@ -65,7 +65,8 @@
             <video ref="videoRef" controls autoplay class="video" />
             <el-slider
               v-model="seekPos"
-              :max="duration"
+              :max="duration ?? 0"
+              :disabled="duration === null"
               :show-tooltip="false"
               class="seek"
               @change="onSeek"
@@ -100,7 +101,7 @@ const currentRecord = ref<any>(null)
 const currentStreamId = ref('')
 const playUrl = ref('')
 const seekPos = ref(0)
-const duration = ref(3600)
+const duration = ref<number | null>(null)
 const videoRef = ref<HTMLVideoElement>()
 
 // 与实时预览页同一套播放约定：HLS(hls.js) → FLV(flv.js) → 原生
@@ -219,6 +220,19 @@ async function onQuery() {
   }
 }
 
+/** 与后端 SDP 时间解析一致：无时区的日期按 UTC 解释。 */
+function playbackDuration(start: unknown, end: unknown): number | null {
+  const timestamp = (value: unknown): number => {
+    if (typeof value !== 'string' || !value.trim()) return NaN
+    const text = value.trim()
+    if (/^\d+$/.test(text)) return Number(text) * 1000
+    const iso = text.replace(' ', 'T')
+    return Date.parse(/(?:Z|[+-]\d\d:\d\d)$/i.test(iso) ? iso : `${iso}Z`)
+  }
+  const seconds = Math.floor((timestamp(end) - timestamp(start)) / 1000)
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
 async function onSelect(row: any) {
   currentRecord.value = row
   playerLoading.value = true
@@ -238,6 +252,8 @@ async function onSelect(row: any) {
     }
     currentStreamId.value = data.streamId
     playUrl.value = url
+    duration.value = playbackDuration(data.startTime ?? row.startTime, data.endTime ?? row.endTime)
+    seekPos.value = 0
     await attachVideo(url)
   } catch (e: any) {
     ElMessage.error(e?.message ?? '回放启动失败')
@@ -260,7 +276,7 @@ async function control(action: 'pause' | 'resume' | 'speed', speed?: number) {
 
 async function onSeek(value: number | number[]) {
   const v = Array.isArray(value) ? value[0] : value
-  if (!currentStreamId.value) return
+  if (!currentStreamId.value || duration.value === null) return
   await seekPlayback(currentStreamId.value, v)
 }
 
