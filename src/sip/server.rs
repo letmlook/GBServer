@@ -689,7 +689,8 @@ pub struct SipServer {
     pending_invites: Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
     ssrc_manager: Arc<SsrcManager>,
     /// Retained for the server lifetime until durable recovery owns release.
-    restored_playback_ssrcs: Vec<crate::sip::gb28181::ssrc::SsrcLease>,
+    restored_playback_ssrcs:
+        std::sync::Mutex<std::collections::HashMap<String, crate::sip::gb28181::ssrc::SsrcLease>>,
     stream_reconnect_manager: Arc<StreamReconnectManager>,
     nat_helper: Arc<NatHelper>,
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
@@ -710,6 +711,15 @@ pub struct SipServer {
 }
 
 impl SipServer {
+    #[cfg(test)]
+    pub(crate) fn test_playback_lease(
+        &self,
+        device: &str,
+        channel: &str,
+    ) -> Option<crate::sip::gb28181::ssrc::SsrcLease> {
+        self.ssrc_manager.try_lease(device, channel, "playback")
+    }
+
     pub(crate) fn database_pool(&self) -> &Pool {
         &self.pool
     }
@@ -718,7 +728,7 @@ impl SipServer {
     /// If a record cannot be reserved, fail startup rather than silently reuse it.
     pub async fn restore_playback_ssrcs(&mut self) -> Result<usize> {
         let records = crate::db::playback_recovery::list_retained(&self.pool).await?;
-        let mut leases = Vec::with_capacity(records.len());
+        let mut leases = std::collections::HashMap::with_capacity(records.len());
         for record in records {
             let lease = self
                 .ssrc_manager
@@ -735,11 +745,41 @@ impl SipServer {
                         record.ssrc
                     )
                 })?;
-            leases.push(lease);
+            leases.insert(record.stream_id, lease);
         }
         let count = leases.len();
-        self.restored_playback_ssrcs = leases;
+        *self
+            .restored_playback_ssrcs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = leases;
         Ok(count)
+    }
+
+    /// Keep a failed dialog's actual lease until a future recovery resolves it.
+    pub(crate) fn retain_playback_ssrc(&self, call_id: &str, stream_id: &str, ssrc: &str) -> bool {
+        let Some(lease) = self.invite_session_manager.take_owned_ssrc(call_id) else {
+            return false;
+        };
+        if lease.ssrc() != ssrc {
+            tracing::error!(%call_id, %stream_id, "回放 SSRC 与会话持有的编号不一致");
+            // Retain even an inconsistent lease rather than releasing an active allocation.
+            self.restored_playback_ssrcs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(stream_id.to_owned(), lease);
+            return false;
+        }
+        let mut retained = self
+            .restored_playback_ssrcs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if retained.contains_key(stream_id) {
+            // Duplicate identifiers must not release either allocation.
+            retained.insert(format!("{}:{}", stream_id, uuid::Uuid::new_v4()), lease);
+            return false;
+        }
+        retained.insert(stream_id.to_owned(), lease);
+        true
     }
 
     #[cfg(test)]
@@ -785,7 +825,7 @@ impl SipServer {
             ws_state: None,
             pending_invites: Arc::new(DashMap::new()),
             ssrc_manager,
-            restored_playback_ssrcs: Vec::new(),
+            restored_playback_ssrcs: std::sync::Mutex::new(std::collections::HashMap::new()),
             stream_reconnect_manager: Arc::new(stream_reconnect),
             nat_helper,
             cascade_registrar: None,

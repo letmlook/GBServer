@@ -292,10 +292,14 @@ mod command_state_tests {
         session.status = InviteSessionStatus::Active;
         session.set_local_dialog("local", 1);
         session.set_remote_tag("remote");
-        session.ssrc = Some("1200000001".into());
-        sip.invite_session_manager().create(session).await;
+        let owned_ssrc = sip.test_playback_lease("device", "channel").unwrap();
+        assert_eq!(owned_ssrc.ssrc(), "1200000001");
+        session.ssrc = Some(owned_ssrc.ssrc().to_string());
+        sip.invite_session_manager()
+            .create_owned(session, owned_ssrc)
+            .await;
         let guard = PlaybackStartGuard {
-            sip,
+            sip: sip.clone(),
             playback: Some(manager.clone()),
             call_id: "before-insert".into(),
             stream_id: stream.clone(),
@@ -320,6 +324,8 @@ mod command_state_tests {
         assert_eq!(saved.last_cseq, 4);
         assert_eq!(saved.state, "cleanup_pending");
         assert_eq!(saved.remote_tag.as_deref(), Some("remote"));
+        sip.invite_session_manager().remove("before-insert").await;
+        assert!(sip.ssrc_manager().get("1200000001").is_some());
         let mut restarted = crate::sip::SipServer::new(
             crate::config::SipConfig::default(),
             state.pool.clone(),
@@ -327,6 +333,62 @@ mod command_state_tests {
         );
         assert_eq!(restarted.restore_playback_ssrcs().await.unwrap(), 1);
         assert!(restarted.ssrc_manager().get("1200000001").is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_journal_write_still_retains_owned_ssrc() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        let (state, manager, stream) = state_with_session().await;
+        let mut recovery = manager.get(&stream).await.unwrap();
+        recovery.device_id = "device".into();
+        recovery.channel_id = "channel".into();
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let owned = sip.test_playback_lease("device", "channel").unwrap();
+        let ssrc = owned.ssrc().to_string();
+        let mut session = InviteSession::new(
+            "journal-failure",
+            "device",
+            "channel",
+            StreamType::Playback,
+            "127.0.0.1:15060".parse().unwrap(),
+        );
+        session.status = InviteSessionStatus::Active;
+        session.set_local_dialog("local", 1);
+        session.set_remote_tag("remote");
+        session.ssrc = Some(ssrc.clone());
+        sip.invite_session_manager()
+            .create_owned(session, owned)
+            .await;
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("DROP TABLE gb_playback_recovery").execute(p)
+        })
+        .unwrap();
+        drop(PlaybackStartGuard {
+            sip: sip.clone(),
+            playback: Some(manager.clone()),
+            call_id: "journal-failure".into(),
+            stream_id: stream.clone(),
+            recovery_session: Some(recovery),
+            rtp_lease: None,
+            armed: true,
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !manager
+                .get(&stream)
+                .await
+                .is_some_and(|session| session.cleanup_pending)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        sip.invite_session_manager().remove("journal-failure").await;
+        assert!(sip.ssrc_manager().get(&ssrc).is_some());
     }
 
     #[tokio::test]
@@ -789,7 +851,9 @@ impl Drop for PlaybackStartGuard {
                                     app: recovery.app.clone(), state: "cleanup_pending".into(),
                                     last_cseq: i64::from(dialog.invite_cseq),
                                 };
-                                if let Err(error) = crate::db::playback_recovery::insert(sip.database_pool(), &record).await {
+                                if !sip.retain_playback_ssrc(&call_id, &stream_id, ssrc) {
+                                    tracing::error!(%call_id, %stream_id, "无法保留回放 SSRC 的所有权，恢复记录仅保存在当前进程");
+                                } else if let Err(error) = crate::db::playback_recovery::insert(sip.database_pool(), &record).await {
                                     tracing::error!(%call_id, %stream_id, "持久化待清理回放失败，记录仅保存在当前进程: {}", error);
                                 }
                             } else {

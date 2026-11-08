@@ -409,6 +409,14 @@ impl InviteSessionManager {
         self.sessions.read().await.get(call_id).cloned()
     }
 
+    /// Transfer the allocation out of the dialog before its cleanup drops it.
+    pub(crate) fn take_owned_ssrc(&self, call_id: &str) -> Option<super::ssrc::SsrcLease> {
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(call_id)
+    }
+
     /// 为活动回放对话原子分配下一个本端请求 CSeq。
     /// 发送失败也保留已分配的序号，避免重试与并发请求复用它。
     pub async fn reserve_playback_cseq(
