@@ -13,7 +13,15 @@
 临时库及容器已清理。这不等同于三方言完整 API 冒烟。首次尝试未初始化 MySQL 表，
 因缺表失败；导入两套初始化 SQL 后重跑通过。`docker compose ps` 因当前环境未提供
 `GBSERVER_JWT_SECRET` 和 `GBSERVER_SIP_ADVERTISE_IP` 无法解析配置；本轮未做目标
-Linux Compose 或 GB28181 真机验收。真实 ZLM + Mock 的最终媒体/录像浏览器闭环仍待复验。
+Linux Compose 或 GB28181 真机验收。真实 ZLM + Mock 的媒体/录像浏览器闭环随后复验，见下。
+
+2026-11-08 补充：隔离 SQLite 后端、独立 ZLM 容器和可推 RTP 的 SIP Mock 执行
+`cloudRecord.spec.ts`、`playUrls.spec.ts`、`webrtcMedia.spec.ts`，Chromium 5/5
+通过；本轮新 MP4 记录大小 133700 字节，录像播放（含 Range）及删除通过，FLV
+可拉取，WebRTC ICE connected、接收 6159 字节并解码 3 帧。临时容器、数据库及
+录像随测试清理。首次端口池设置为 21 个端口，低于 ZLM 要求的 36 个导致起流失败，
+扩大到 61 个后重跑通过。Linux 和 macOS 叠加 Compose 配置以临时占位环境变量执行
+`docker compose config -q` 通过，仅验证配置解析；目标 Linux 部署及真机仍待验收。
 
 2026-11-08：回放流标识和 SIP Call-ID 改用独立 UUID，避免同秒或同毫秒请求复用标识；前缀保持兼容。八线程分别生成 10000 个流标识和 Call-ID 无重复；隔离 SQLite + 真实 ZLM + SIP Mock 的单路回放、控制、定位和 BYE 通过。相同设备并发回放的 SSRC 与媒体链路仍需专项验证，真机未验。
 
