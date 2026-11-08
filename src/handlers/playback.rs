@@ -45,6 +45,63 @@ mod command_state_tests {
     use super::*;
 
     #[tokio::test]
+    async fn recovery_lists_persisted_dialog_as_not_retryable_after_restart() {
+        let (state, _, active_stream) = state_with_session().await;
+        crate::db::playback_recovery::ensure_table(&state.pool)
+            .await
+            .unwrap();
+        let record = crate::db::playback_recovery::RecoveryRecord {
+            stream_id: "persisted".into(),
+            call_id: "call".into(),
+            device_id: "device".into(),
+            channel_id: "channel".into(),
+            ssrc: "1200000001".into(),
+            peer_addr: "127.0.0.1:5060".into(),
+            transport: "udp".into(),
+            local_tag: Some("secret-local-tag".into()),
+            remote_tag: Some("secret-remote-tag".into()),
+            media_server_id: "zlm".into(),
+            app: "rtp".into(),
+            state: "active".into(),
+            last_cseq: 2,
+        };
+        crate::db::playback_recovery::insert(&state.pool, &record)
+            .await
+            .unwrap();
+        let mut live = record.clone();
+        live.stream_id = active_stream;
+        live.call_id = "live-call".into();
+        crate::db::playback_recovery::insert(&state.pool, &live)
+            .await
+            .unwrap();
+        let token = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes())
+            .create_token("admin", 60)
+            .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("access-token", token.parse().unwrap());
+        let response = playback_recovery_list(
+            State(state.clone()),
+            headers.clone(),
+            Query(RecoveryListQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0
+        .data
+        .unwrap();
+        assert_eq!(response["total"], 1);
+        assert_eq!(response["items"][0]["streamId"], "persisted");
+        assert_eq!(response["items"][0]["retryable"], false);
+        assert!(!response.to_string().contains("secret-remote-tag"));
+        let retry = playback_recovery_retry(State(state), headers, Path("persisted".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_ne!(retry.code, 0);
+        assert!(retry.msg.contains("重启"));
+    }
+
+    #[tokio::test]
     async fn admin_retry_sends_bye_and_removes_pending_record() {
         use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
         let (mut state, manager, stream) = state_with_session().await;
@@ -519,6 +576,9 @@ mod command_state_tests {
 
     async fn state_with_session() -> (AppState, Arc<PlaybackManager>, String) {
         let mut state = crate::test_support::app_state().await;
+        crate::db::playback_recovery::ensure_table(&state.pool)
+            .await
+            .unwrap();
         let manager = Arc::new(PlaybackManager::new());
         let stream = "playback_34020000001320000001_34020000001310000001_1700000000".to_string();
         manager
@@ -1390,19 +1450,33 @@ pub async fn playback_recovery_list(
         .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error500, "回放会话管理器不可用"))?;
     let sessions = manager.list_cleanup_pending().await;
-    let total = sessions.len();
+    let active_ids: std::collections::HashSet<String> =
+        manager.sessions.read().await.keys().cloned().collect();
+    let persisted = crate::db::playback_recovery::list_retained(&state.pool).await?;
+    let mut rows: Vec<(String, serde_json::Value)> = sessions.into_iter().map(|s| {
+        let key = s.stream_id.clone();
+        (key, serde_json::json!({
+            "streamId": s.stream_id, "deviceId": s.device_id, "channelId": s.channel_id,
+            "callId": s.call_id, "status": "cleanup_pending", "deviceResult": "unconfirmed", "retryable": true
+        }))
+    }).collect();
+    rows.extend(persisted.into_iter().filter(|s| !active_ids.contains(&s.stream_id)).map(|s| {
+        let key = s.stream_id.clone();
+        (key, serde_json::json!({
+            "streamId": s.stream_id, "deviceId": s.device_id, "channelId": s.channel_id,
+            "callId": s.call_id, "status": "recovery_required", "deviceResult": "unconfirmed", "retryable": false,
+            "retryReason": "服务重启后的 SIP 对话尚未恢复，暂不能重试"
+        }))
+    }));
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let total = rows.len();
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100).clamp(1, 100);
-    let items: Vec<_> = sessions
+    let items: Vec<_> = rows
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(|s| {
-            serde_json::json!({
-                "streamId": s.stream_id, "deviceId": s.device_id, "channelId": s.channel_id,
-                "callId": s.call_id, "status": "cleanup_pending", "deviceResult": "unconfirmed"
-            })
-        })
+        .map(|(_, item)| item)
         .collect();
     Ok(Json(ApiResult::success(
         serde_json::json!({"items": items, "total": total, "offset": offset, "limit": limit}),
@@ -1429,6 +1503,14 @@ pub async fn playback_recovery_retry(
         .ok_or_else(|| AppError::business(ErrorCode::Error500, "回放会话管理器不可用"))?;
     let session = manager.get(&stream_id).await.filter(|s| s.cleanup_pending);
     let Some(session) = session else {
+        if crate::db::playback_recovery::get(&state.pool, &stream_id)
+            .await?
+            .is_some()
+        {
+            return Ok(Json(ApiResult::error(
+                "服务重启后的 SIP 对话尚未恢复，暂不能重试",
+            )));
+        }
         return Ok(Json(ApiResult::error("没有待处理的回放会话")));
     };
     let result = playback_stop(

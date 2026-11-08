@@ -6,8 +6,10 @@ export interface PlaybackRecoveryItem {
   deviceId: string
   channelId: string
   callId: string | null
-  status: 'cleanup_pending'
+  status: 'cleanup_pending' | 'recovery_required'
   deviceResult: 'unconfirmed'
+  retryable: boolean
+  retryReason?: string
 }
 
 export function listPlaybackRecovery(offset: number, limit: number) {

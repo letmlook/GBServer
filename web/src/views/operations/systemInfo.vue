@@ -61,7 +61,7 @@
 
     <el-card v-if="isAdmin" class="recovery-card" data-testid="playback-recovery">
       <template #header><span>待清理的回放会话</span></template>
-      <p class="recovery-note">以下回放会话的清理尚未完成。重试完成后，设备是否执行仍需确认；记录仅保留在当前服务进程中。</p>
+      <p class="recovery-note">回放清理后设备是否执行仍需确认。当前进程的待清理记录可能在重启后丢失；已持久化的记录在重启后暂不能重试。</p>
       <el-alert v-if="recoveryError" :title="recoveryError" type="error" :closable="false" show-icon />
       <el-table table-layout="auto" :data="recoveryRows" v-loading="recoveryLoading" stripe empty-text="暂无待清理会话">
         <el-table-column prop="deviceId" label="设备 ID" min-width="170" show-overflow-tooltip />
@@ -69,7 +69,7 @@
         <el-table-column prop="streamId" label="流 ID" min-width="190" show-overflow-tooltip />
         <el-table-column label="设备结果" width="120"><template #default>未确认</template></el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
-          <template #default="{ row }"><el-button link type="primary" :loading="retrying === row.streamId" :disabled="retrying !== ''" @click="retryRecovery(row.streamId)">重试清理</el-button></template>
+          <template #default="{ row }"><span v-if="row.retryable === false" :title="row.retryReason">重启后待恢复</span><el-button v-else link type="primary" :loading="retrying === row.streamId" :disabled="retrying !== ''" @click="retryRecovery(row.streamId)">重试清理</el-button></template>
         </el-table-column>
       </el-table>
       <el-pagination v-if="recoveryTotal > recoveryPageSize" class="recovery-pagination" layout="prev, pager, next" :total="recoveryTotal" :page-size="recoveryPageSize" v-model:current-page="recoveryPage" @current-change="loadRecovery" />
