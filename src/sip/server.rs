@@ -688,6 +688,8 @@ pub struct SipServer {
     ws_state: Option<Arc<WsState>>,
     pending_invites: Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
     ssrc_manager: Arc<SsrcManager>,
+    /// Retained for the server lifetime until durable recovery owns release.
+    restored_playback_ssrcs: Vec<crate::sip::gb28181::ssrc::SsrcLease>,
     stream_reconnect_manager: Arc<StreamReconnectManager>,
     nat_helper: Arc<NatHelper>,
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
@@ -708,6 +710,34 @@ pub struct SipServer {
 }
 
 impl SipServer {
+    /// Quarantine journaled identifiers before the server accepts new calls.
+    /// If a record cannot be reserved, fail startup rather than silently reuse it.
+    pub async fn restore_playback_ssrcs(&mut self) -> Result<usize> {
+        let records = crate::db::playback_recovery::list_retained(&self.pool).await?;
+        let mut leases = Vec::with_capacity(records.len());
+        for record in records {
+            let lease = self
+                .ssrc_manager
+                .try_restore_lease(
+                    &record.ssrc,
+                    &record.device_id,
+                    &record.channel_id,
+                    "playback",
+                )
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "无法恢复回放 SSRC：流 {} 的编号 {} 无效或冲突",
+                        record.stream_id,
+                        record.ssrc
+                    )
+                })?;
+            leases.push(lease);
+        }
+        let count = leases.len();
+        self.restored_playback_ssrcs = leases;
+        Ok(count)
+    }
+
     #[cfg(test)]
     pub(crate) async fn set_test_udp_socket(&self, socket: UdpSocket) {
         *self.socket.write().await = Some(Arc::new(socket));
@@ -751,6 +781,7 @@ impl SipServer {
             ws_state: None,
             pending_invites: Arc::new(DashMap::new()),
             ssrc_manager,
+            restored_playback_ssrcs: Vec::new(),
             stream_reconnect_manager: Arc::new(stream_reconnect),
             nat_helper,
             cascade_registrar: None,
@@ -9321,6 +9352,86 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn startup_restores_journaled_ssrc_before_new_allocations() {
+        let state = crate::test_support::app_state().await;
+        crate::db::playback_recovery::ensure_table(&state.pool)
+            .await
+            .unwrap();
+        let mut server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
+        let old = server
+            .ssrc_manager
+            .try_lease("device", "channel", "playback")
+            .unwrap();
+        let ssrc = old.ssrc().to_string();
+        drop(old);
+        let record = crate::db::playback_recovery::RecoveryRecord {
+            stream_id: "restore-stream".into(),
+            call_id: "restore-call".into(),
+            device_id: "device".into(),
+            channel_id: "channel".into(),
+            ssrc: ssrc.clone(),
+            peer_addr: "127.0.0.1:5060".into(),
+            transport: "udp".into(),
+            local_tag: Some("local".into()),
+            remote_tag: Some("remote".into()),
+            media_server_id: "zlm".into(),
+            app: "rtp".into(),
+            state: "cleanup_pending".into(),
+            last_cseq: 1,
+        };
+        crate::db::playback_recovery::insert(&state.pool, &record)
+            .await
+            .unwrap();
+        assert_eq!(server.restore_playback_ssrcs().await.unwrap(), 1);
+        assert_eq!(server.ssrc_manager.get(&ssrc).unwrap().device_id, "device");
+        assert_ne!(
+            server
+                .ssrc_manager
+                .try_lease("new", "channel", "playback")
+                .unwrap()
+                .ssrc(),
+            ssrc
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_rejects_colliding_journaled_ssrcs() {
+        let state = crate::test_support::app_state().await;
+        crate::db::playback_recovery::ensure_table(&state.pool)
+            .await
+            .unwrap();
+        let mut server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
+        let old = server
+            .ssrc_manager
+            .try_lease("device", "channel", "playback")
+            .unwrap();
+        let ssrc = old.ssrc().to_string();
+        drop(old);
+        for id in ["one", "two"] {
+            let record = crate::db::playback_recovery::RecoveryRecord {
+                stream_id: id.into(),
+                call_id: id.into(),
+                device_id: "device".into(),
+                channel_id: "channel".into(),
+                ssrc: ssrc.clone(),
+                peer_addr: "127.0.0.1:5060".into(),
+                transport: "udp".into(),
+                local_tag: Some("local".into()),
+                remote_tag: Some("remote".into()),
+                media_server_id: "zlm".into(),
+                app: "rtp".into(),
+                state: "cleanup_pending".into(),
+                last_cseq: 1,
+            };
+            crate::db::playback_recovery::insert(&state.pool, &record)
+                .await
+                .unwrap();
+        }
+        assert!(server.restore_playback_ssrcs().await.is_err());
+        assert_eq!(server.ssrc_manager.active_count(), 0);
+    }
 
     #[tokio::test]
     async fn cancelled_answered_playback_sends_bye_and_cleans_waiter() {

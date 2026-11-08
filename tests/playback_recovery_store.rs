@@ -24,6 +24,10 @@ async fn exercise(pool: Pool) {
     journal::ensure_table(&pool).await.unwrap();
     let record = sample_record();
     journal::insert(&pool, &record).await.unwrap();
+    assert!(journal::list_retained(&pool)
+        .await
+        .unwrap()
+        .contains(&record));
     assert!(journal::insert(&pool, &record).await.is_err());
     assert_eq!(
         journal::get(&pool, &record.stream_id).await.unwrap(),

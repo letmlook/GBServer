@@ -61,6 +61,15 @@ pub async fn get(pool: &Pool, stream_id: &str) -> sqlx::Result<Option<RecoveryRe
     })
 }
 
+/// Every retained entry may still own a remote stream, including entries whose
+/// local cleanup completed without a confirmed device response.
+pub async fn list_retained(pool: &Pool) -> sqlx::Result<Vec<RecoveryRecord>> {
+    let sql = "SELECT stream_id, call_id, device_id, channel_id, ssrc, peer_addr, transport, local_tag, remote_tag, media_server_id, app, state, last_cseq FROM gb_playback_recovery ORDER BY stream_id";
+    crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, RecoveryRecord>(sql).fetch_all(p)
+    })
+}
+
 /// Complete a previously journaled INVITE exactly once; late responses cannot
 /// replace the established tag or revive an entry already being cleaned up.
 pub async fn activate_dialog(pool: &Pool, stream_id: &str, remote_tag: &str) -> sqlx::Result<bool> {

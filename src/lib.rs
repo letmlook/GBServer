@@ -816,6 +816,10 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 pool.clone(),
                 cfg.database.sqlite_max_devices,
             );
+            let restored = server.restore_playback_ssrcs().await?;
+            if restored > 0 {
+                tracing::warn!(restored, "已保留待恢复回放的 SSRC；设备状态仍未确认");
+            }
             server.set_ws_state(ws_state.clone()).await;
             // **必须显式接线**：`SipServer::tcp_enabled` 与 `sip.tcp_enabled`
             // 之间此前没有任何连接点，`set_tcp_enabled` 是死代码 ——
