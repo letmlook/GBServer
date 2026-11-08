@@ -169,6 +169,40 @@ async fn sync_platform_registration(
     }
 }
 
+async fn start_cascade_stream(
+    sip: &crate::sip::SipServer,
+    zlm: &crate::zlm::ZlmClient,
+    platform_id: &str,
+    channel_id: &str,
+) -> anyhow::Result<()> {
+    let stream_id = format!("cascade_{}_{}", platform_id, channel_id);
+    let info = zlm
+        .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+            secret: zlm.secret.clone(),
+            stream_id: stream_id.clone(),
+            port: Some(0),
+            use_tcp: Some(false),
+            rtp_type: Some(0),
+            recv_port: None,
+        })
+        .await?;
+    if let Err(error) = sip
+        .send_platform_invite(platform_id, channel_id, info.port)
+        .await
+    {
+        if let Err(cleanup_error) = zlm.close_rtp_server(&stream_id).await {
+            tracing::warn!(%stream_id, "级联 INVITE 失败后关闭 RTP 端口失败: {}", cleanup_error);
+            return Err(anyhow::anyhow!(
+                "{}; RTP 端口清理失败: {}",
+                error,
+                cleanup_error
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn push_platform_channels(
     state: &AppState,
     platform: &Platform,
@@ -195,30 +229,11 @@ async fn push_platform_channels(
             tracing::error!("ZLM 未配置，无法为级联取流分配收流端口");
             break;
         };
-        let stream_id = format!("cascade_{}_{}", server_gb_id, channel_id);
-        let media_port = match zlm
-            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                secret: zlm.secret.clone(),
-                stream_id: stream_id.clone(),
-                port: Some(0),
-                use_tcp: Some(false),
-                rtp_type: Some(0),
-                recv_port: None,
-            })
-            .await
-        {
-            Ok(info) => info.port,
-            Err(e) => {
-                tracing::error!("openRtpServer for cascade {} failed: {}", stream_id, e);
-                continue;
+        match start_cascade_stream(sip, zlm, server_gb_id, channel_id).await {
+            Ok(()) => pushed_count += 1,
+            Err(error) => {
+                tracing::error!(%server_gb_id, %channel_id, "级联取流启动失败: {}", error)
             }
-        };
-        if sip
-            .send_platform_invite(server_gb_id, channel_id, media_port)
-            .await
-            .is_ok()
-        {
-            pushed_count += 1;
         }
     }
     Ok(pushed_count)
@@ -779,30 +794,7 @@ pub async fn platform_channel_push(
             errors.push("ZLM 未配置，无法分配收流端口".to_string());
             break;
         };
-        let stream_id = format!("cascade_{}_{}", server_gb_id, channel_id);
-        let media_port = match zlm
-            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                secret: zlm.secret.clone(),
-                stream_id: stream_id.clone(),
-                port: Some(0),
-                use_tcp: Some(false),
-                rtp_type: Some(0),
-                recv_port: None,
-            })
-            .await
-        {
-            Ok(info) => info.port,
-            Err(e) => {
-                tracing::error!("openRtpServer for cascade {} failed: {}", stream_id, e);
-                errors.push(format!("{}: ZLM 收流端口分配失败: {}", channel_id, e));
-                continue;
-            }
-        };
-
-        match sip
-            .send_platform_invite(&server_gb_id, channel_id, media_port)
-            .await
-        {
+        match start_cascade_stream(sip, zlm, &server_gb_id, channel_id).await {
             Ok(_) => {
                 tracing::info!(
                     "Sent platform INVITE for channel {} to {}",
@@ -2289,6 +2281,50 @@ pub async fn platform_info(
 mod platform_contract_tests {
     use super::*;
     use crate::test_support::app_state;
+
+    #[tokio::test]
+    async fn failed_cascade_invite_closes_allocated_rtp_server() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let closes = Arc::new(AtomicUsize::new(0));
+        let observed = closes.clone();
+        let app = axum::Router::new()
+            .route(
+                "/index/api/openRtpServer",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"code":0,"port":30001}))
+                }),
+            )
+            .route(
+                "/index/api/closeRtpServer",
+                axum::routing::get(move || {
+                    let observed = observed.clone();
+                    async move {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"code":0,"hit":1}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let state = app_state().await;
+        let sip = crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        );
+        let zlm = crate::zlm::ZlmClient::new("127.0.0.1", addr.port(), "test");
+        assert!(
+            start_cascade_stream(&sip, &zlm, "missing-platform", "channel")
+                .await
+                .is_err()
+        );
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
 
     /// **回归**：越界端口在**入库前**就必须被拒，不能靠发包处的 `as u16` 回绕。
     /// **回归（端点级）**：越界端口必须被**拒绝入库**。
