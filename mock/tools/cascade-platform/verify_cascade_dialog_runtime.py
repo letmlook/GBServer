@@ -7,11 +7,17 @@ avoid registration. GBSERVER_TEST_PLATFORM_ID and _GB_ID identify it.
 import hashlib
 import os
 import socket
+import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
+from pathlib import Path
 
-from verify_cascade_invite_failure_runtime import BASE, ZLM, get
+from verify_cascade_invite_failure_runtime import BASE, HTTP, ZLM, get
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "sip-device"))
+from sip_device_mock import DeviceConfig, RtpSender, SipDeviceMock
 
 
 def main():
@@ -20,6 +26,7 @@ def main():
     secret = os.environ["GBSERVER_TEST_ZLM_SECRET"]
     channel = "34020000001310009876"
     reject = os.environ.get("GBSERVER_TEST_REJECT") == "1"
+    media = os.environ.get("GBSERVER_TEST_MEDIA") == "1"
     stream = f"cascade_{platform_gb}_{channel}"
     query = urllib.parse.urlencode({"secret": secret})
 
@@ -33,6 +40,7 @@ def main():
     sock.bind(("127.0.0.1", 15062))
     sock.settimeout(8)
     outcome = []
+    senders = []
 
     def peer():
         try:
@@ -63,6 +71,12 @@ def main():
                 return
             ack, _ = sock.recvfrom(65535)
             assert ack.startswith(b"ACK "), ack[:80]
+            if media:
+                ip, port, ssrc = SipDeviceMock._parse_platform_media(text.split("\r\n\r\n", 1)[1])
+                assert ip and port and ssrc.isdecimal(), (ip, port, ssrc)
+                sender = RtpSender(DeviceConfig())
+                assert sender.start(ip, port, int(ssrc)), "RTP sender failed to start"
+                senders.append(sender)
             outcome.append((addr, headers))
         except Exception as error:
             outcome.append(error)
@@ -83,6 +97,19 @@ def main():
             return
         assert result["data"]["pushedCount"] == 1 and not result["data"]["errors"], result
         assert stream in servers(), "accepted session has no RTP server"
+        if media:
+            params = urllib.parse.urlencode({"app": "rtp", "stream": stream})
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                media_info = get(BASE + "/api/media/stream_info_by_app_and_stream?" + params, {"access-token": token})
+                if media_info["code"] == 0 and media_info["data"]["count"] > 0:
+                    break
+                time.sleep(0.2)
+            else:
+                raise AssertionError("cascade RTP did not produce a ZLM media stream")
+            with HTTP.open(urllib.request.Request(f"{ZLM}/rtp/{stream}.live.flv"), timeout=10) as response:
+                media_bytes = response.read(1024)
+            assert len(media_bytes) == 1024 and media_bytes.startswith(b"FLV"), "cascade FLV data unavailable"
         addr, headers = outcome[0]
         bye = (f"BYE sip:platform@127.0.0.1:5060 SIP/2.0\r\n"
                f"Via: SIP/2.0/UDP 127.0.0.1:15062;branch=z9hG4bKbye\r\n"
@@ -93,10 +120,18 @@ def main():
         while time.monotonic() < deadline and stream in servers():
             time.sleep(0.1)
         assert stream not in servers(), "peer BYE did not close RTP server"
-        print("cascade accepted: ACK received; peer BYE closed real ZLM RTP server")
+        print(f"cascade accepted: ACK received; FLV bytes={len(media_bytes) if media else 0}; peer BYE closed real ZLM RTP server")
     finally:
         thread.join(10)
+        for sender in senders:
+            sender.stop()
         sock.close()
+        try:
+            if stream in servers():
+                params = urllib.parse.urlencode({"secret": secret, "stream_id": stream})
+                get(ZLM + "/index/api/closeRtpServer?" + params)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
