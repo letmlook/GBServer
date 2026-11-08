@@ -4,6 +4,13 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：当前代码在 Docker Desktop Linux/ARM64 构建 release 镜像成功
+（镜像 `sha256:b33a175ed4eb2db5d911bf656950ff29cf73328a61a542b76b7e30acdbdd9a6d`）；
+隔离容器以临时 SQLite 库验证健康、管理员登录、静态首页及三个版本接口通过。
+初次构建因 Docker 注入的代理在容器中指向不可用的 `127.0.0.1:7892` 而失败；
+本次构建参数清空代理后通过。此验证不覆盖目标 Linux 主机 host 网络、真实设备或
+容器部署下的媒体闭环，不能替代目标环境验收。
+
 2026-11-08：当前代码的隔离 SQLite 后端实测 `/api/server/version`、
 `/api/server/system/info` 与 `/api/openapi.json` 的版本均为 `2.0.0`。
 
