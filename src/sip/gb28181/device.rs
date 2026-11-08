@@ -1,5 +1,6 @@
 //! 设备注册/注销管理
 
+use super::register_nonce::RegistrationIngress;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,6 +28,7 @@ pub struct Device {
     pub addr: Option<SocketAddr>,
     /// Proof from an authenticated REGISTER handled by this process only.
     authenticated_until: Option<Instant>,
+    authenticated_ingress: Option<RegistrationIngress>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,7 +51,7 @@ impl DeviceManager {
     }
 
     pub async fn register(&self, device_id: &str, addr: SocketAddr) {
-        self.register_inner(device_id, addr, None).await;
+        self.register_inner(device_id, addr, None, None).await;
     }
 
     pub(crate) async fn register_authenticated(
@@ -57,10 +59,12 @@ impl DeviceManager {
         device_id: &str,
         addr: SocketAddr,
         expires: u64,
+        ingress: RegistrationIngress,
     ) {
         // Recovery proof is deliberately bounded even if a peer requests a very long registration.
         let until = Instant::now().checked_add(Duration::from_secs(expires.min(86_400)));
-        self.register_inner(device_id, addr, until).await;
+        self.register_inner(device_id, addr, until, Some(ingress))
+            .await;
     }
 
     async fn register_inner(
@@ -68,6 +72,7 @@ impl DeviceManager {
         device_id: &str,
         addr: SocketAddr,
         authenticated_until: Option<Instant>,
+        authenticated_ingress: Option<RegistrationIngress>,
     ) {
         let mut guard = self.devices.write().await;
         let now = Utc::now();
@@ -89,6 +94,7 @@ impl DeviceManager {
             custom_name: None,
             addr: Some(addr),
             authenticated_until,
+            authenticated_ingress,
         };
         guard.insert(device_id.to_string(), device);
     }
@@ -98,6 +104,7 @@ impl DeviceManager {
         if let Some(d) = guard.get_mut(device_id) {
             d.online = false;
             d.authenticated_until = None;
+            d.authenticated_ingress = None;
         }
     }
 
@@ -134,6 +141,7 @@ impl DeviceManager {
             custom_name: device.custom_name.clone(),
             addr,
             authenticated_until: None,
+            authenticated_ingress: None,
         };
         self.devices
             .write()
@@ -151,6 +159,15 @@ impl DeviceManager {
 
     /// A DB-restored address or keepalive alone is not current registration proof.
     pub async fn authenticated_address(&self, device_id: &str) -> Option<SocketAddr> {
+        self.authenticated_registration(device_id)
+            .await
+            .map(|(addr, _)| addr)
+    }
+
+    pub async fn authenticated_registration(
+        &self,
+        device_id: &str,
+    ) -> Option<(SocketAddr, RegistrationIngress)> {
         let guard = self.devices.read().await;
         let device = guard.get(device_id)?;
         if device.online
@@ -158,9 +175,20 @@ impl DeviceManager {
                 .authenticated_until
                 .is_some_and(|until| Instant::now() < until)
         {
-            device.addr
+            Some((device.addr?, device.authenticated_ingress?))
         } else {
             None
+        }
+    }
+
+    pub async fn invalidate_ingress(&self, source: SocketAddr, ingress: RegistrationIngress) {
+        self.register_nonces.invalidate_ingress(source, ingress);
+        let mut guard = self.devices.write().await;
+        for device in guard.values_mut() {
+            if device.addr == Some(source) && device.authenticated_ingress == Some(ingress) {
+                device.authenticated_until = None;
+                device.authenticated_ingress = None;
+            }
         }
     }
 
@@ -170,6 +198,7 @@ impl DeviceManager {
             d.online = online;
             if !online {
                 d.authenticated_until = None;
+                d.authenticated_ingress = None;
             }
             d.keepalive_time = Utc::now();
         }
@@ -283,13 +312,36 @@ mod keepalive_gate_tests {
         assert!(mgr.authenticated_address("device").await.is_none());
         mgr.register("device", addr).await;
         assert!(mgr.authenticated_address("device").await.is_none());
-        mgr.register_authenticated("device", addr, 60).await;
+        mgr.register_authenticated("device", addr, 60, RegistrationIngress::Udp)
+            .await;
         assert_eq!(mgr.authenticated_address("device").await, Some(addr));
         mgr.unregister("device").await;
         mgr.update_keepalive("device").await;
         assert!(mgr.authenticated_address("device").await.is_none());
-        mgr.register_authenticated("device", addr, 0).await;
+        mgr.register_authenticated("device", addr, 0, RegistrationIngress::Udp)
+            .await;
         assert!(mgr.authenticated_address("device").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn closing_old_tcp_connection_does_not_clear_new_connection_proof() {
+        let mgr = DeviceManager::new();
+        let addr = "192.0.2.10:5060".parse().unwrap();
+        let old = RegistrationIngress::Tcp(uuid::Uuid::new_v4());
+        let new = RegistrationIngress::Tcp(uuid::Uuid::new_v4());
+        mgr.register_nonces
+            .issue_bound("old-nonce", "device", addr, old);
+        mgr.register_authenticated("device", addr, 60, new).await;
+        mgr.invalidate_ingress(addr, old).await;
+        assert_eq!(
+            mgr.authenticated_registration("device").await,
+            Some((addr, new))
+        );
+        assert!(!mgr
+            .register_nonces
+            .matches_bound("old-nonce", "device", addr, old));
+        mgr.invalidate_ingress(addr, new).await;
+        assert!(mgr.authenticated_registration("device").await.is_none());
     }
 
     /// **安全回归**：陌生来源 IP 的 Keepalive 必须被拒 —— 否则它能把已注册

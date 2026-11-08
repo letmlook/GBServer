@@ -8,9 +8,16 @@ const TTL: Duration = Duration::from_secs(120);
 const MAX_CHALLENGES: usize = 4096;
 const MAX_FINGERPRINT_BYTES: usize = 8192;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationIngress {
+    Udp,
+    Tcp(uuid::Uuid),
+}
+
 struct Challenge {
     device_id: String,
     source: SocketAddr,
+    ingress: RegistrationIngress,
     issued: Instant,
     accepted_request: Option<String>,
 }
@@ -21,7 +28,13 @@ pub struct RegisterNonces {
 }
 
 impl RegisterNonces {
-    pub fn issue(&self, nonce: &str, device_id: &str, source: SocketAddr) {
+    pub fn issue_bound(
+        &self,
+        nonce: &str,
+        device_id: &str,
+        source: SocketAddr,
+        ingress: RegistrationIngress,
+    ) {
         if nonce.len() > 128 || device_id.len() > 128 {
             return;
         }
@@ -42,25 +55,36 @@ impl RegisterNonces {
             Challenge {
                 device_id: device_id.to_owned(),
                 source,
+                ingress,
                 issued: now,
                 accepted_request: None,
             },
         );
     }
 
-    pub fn matches(&self, nonce: &str, device_id: &str, source: SocketAddr) -> bool {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.get(nonce).is_some_and(|entry| {
-            entry.device_id == device_id && entry.source == source && entry.issued.elapsed() < TTL
-        })
-    }
-
-    /// Permit one authenticated request and exact retransmissions from the same socket.
-    pub fn accept(
+    pub fn matches_bound(
         &self,
         nonce: &str,
         device_id: &str,
         source: SocketAddr,
+        ingress: RegistrationIngress,
+    ) -> bool {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.get(nonce).is_some_and(|entry| {
+            entry.device_id == device_id
+                && entry.source == source
+                && entry.ingress == ingress
+                && entry.issued.elapsed() < TTL
+        })
+    }
+
+    /// Permit one authenticated request and exact retransmissions from the same socket.
+    pub fn accept_bound(
+        &self,
+        nonce: &str,
+        device_id: &str,
+        source: SocketAddr,
+        ingress: RegistrationIngress,
         fingerprint: &str,
     ) -> bool {
         if fingerprint.len() > MAX_FINGERPRINT_BYTES {
@@ -70,7 +94,11 @@ impl RegisterNonces {
         let Some(entry) = entries.get_mut(nonce) else {
             return false;
         };
-        if entry.device_id != device_id || entry.source != source || entry.issued.elapsed() >= TTL {
+        if entry.device_id != device_id
+            || entry.source != source
+            || entry.ingress != ingress
+            || entry.issued.elapsed() >= TTL
+        {
             return false;
         }
         match &entry.accepted_request {
@@ -80,6 +108,13 @@ impl RegisterNonces {
                 true
             }
         }
+    }
+
+    pub fn invalidate_ingress(&self, source: SocketAddr, ingress: RegistrationIngress) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, entry| entry.source != source || entry.ingress != ingress);
     }
 }
 
@@ -91,13 +126,33 @@ mod tests {
         let nonces = RegisterNonces::default();
         let source = "127.0.0.1:10000".parse().unwrap();
         let other = "127.0.0.1:10001".parse().unwrap();
-        nonces.issue("n", "device", source);
-        assert!(!nonces.matches("n", "device", other));
-        assert!(!nonces.accept("n", "device", other, "one"));
-        assert!(nonces.accept("n", "device", source, "one"));
-        assert!(nonces.accept("n", "device", source, "one"));
-        assert!(!nonces.accept("n", "device", source, "different"));
+        nonces.issue_bound("n", "device", source, RegistrationIngress::Udp);
+        assert!(!nonces.matches_bound("n", "device", other, RegistrationIngress::Udp));
+        assert!(!nonces.accept_bound("n", "device", other, RegistrationIngress::Udp, "one"));
+        assert!(nonces.accept_bound("n", "device", source, RegistrationIngress::Udp, "one"));
+        assert!(nonces.accept_bound("n", "device", source, RegistrationIngress::Udp, "one"));
+        assert!(!nonces.accept_bound("n", "device", source, RegistrationIngress::Udp, "different"));
         nonces.entries.lock().unwrap().get_mut("n").unwrap().issued = Instant::now() - TTL;
-        assert!(!nonces.matches("n", "device", source));
+        assert!(!nonces.matches_bound("n", "device", source, RegistrationIngress::Udp));
+    }
+
+    #[test]
+    fn challenge_cannot_cross_transport_or_tcp_connection_generation() {
+        let nonces = RegisterNonces::default();
+        let source = "127.0.0.1:10000".parse().unwrap();
+        let tcp_first = RegistrationIngress::Tcp(uuid::Uuid::new_v4());
+        let tcp_reconnected = RegistrationIngress::Tcp(uuid::Uuid::new_v4());
+        nonces.issue_bound("tcp-nonce", "device", source, tcp_first);
+        assert!(!nonces.matches_bound("tcp-nonce", "device", source, RegistrationIngress::Udp));
+        assert!(!nonces.matches_bound("tcp-nonce", "device", source, tcp_reconnected));
+        assert!(nonces.matches_bound("tcp-nonce", "device", source, tcp_first));
+        assert!(!nonces.accept_bound(
+            "tcp-nonce",
+            "device",
+            source,
+            RegistrationIngress::Udp,
+            "auth"
+        ));
+        assert!(nonces.accept_bound("tcp-nonce", "device", source, tcp_first, "auth"));
     }
 }

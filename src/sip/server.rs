@@ -467,6 +467,7 @@ use crate::sip::gb28181::catalog_sync::CatalogSyncManager;
 use crate::sip::gb28181::device_commander::DeviceCommander;
 use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
+use crate::sip::gb28181::register_nonce::RegistrationIngress;
 use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
 
 /// Keep header field boundaries and wire order; do not split quoted commas.
@@ -1373,7 +1374,7 @@ impl SipServer {
                                 &zlm_client,
                                 &pool,
                                 &socket_for_response,
-                                false,
+                                RegistrationIngress::Udp,
                                 &ws_state,
                                 &pending_request_manager,
                                 &pending_invites,
@@ -1885,6 +1886,7 @@ impl SipServer {
         transaction_manager: &Arc<TransactionManager>,
         catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) {
+        let ingress = RegistrationIngress::Tcp(uuid::Uuid::new_v4());
         // 读循环只持有**读半**，写半在 `conn_manager` 里，两者不共用锁。
         // 此前这里 `conn.write().await` 一直持到循环结束，而回响应的
         // `send_to` 又要拿同一把写锁 —— 直接死锁：设备 REGISTER 后
@@ -1900,6 +1902,7 @@ impl SipServer {
                         if let Err(e) = Self::process_tcp_message(
                             data_bytes,
                             addr,
+                            ingress,
                             &config,
                             &device_manager,
                             &session_manager,
@@ -1937,6 +1940,7 @@ impl SipServer {
                     }
                 }
             }
+            device_manager.invalidate_ingress(addr, ingress).await;
             conn_manager.remove_connection(&addr).await;
             crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
         }
@@ -1961,6 +1965,7 @@ impl SipServer {
     async fn process_tcp_message(
         data: &[u8],
         addr: SocketAddr,
+        ingress: RegistrationIngress,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         session_manager: &Arc<SessionManager>,
@@ -1999,7 +2004,7 @@ impl SipServer {
             zlm_client,
             pool,
             socket,
-            true,
+            ingress,
             ws_state,
             pending_request_manager,
             pending_invites,
@@ -2027,7 +2032,7 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
-        _is_tcp: bool,
+        ingress: RegistrationIngress,
         ws_state: &Option<Arc<WsState>>,
         pending_request_manager: &Arc<PendingRequestManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
@@ -2048,6 +2053,7 @@ impl SipServer {
                 Self::handle_request(
                     req,
                     addr,
+                    ingress,
                     config,
                     device_manager,
                     session_manager,
@@ -2102,6 +2108,7 @@ impl SipServer {
     async fn handle_request(
         req: SipRequest,
         addr: SocketAddr,
+        ingress: RegistrationIngress,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         session_manager: &Arc<SessionManager>,
@@ -2123,6 +2130,7 @@ impl SipServer {
                 Self::handle_register(
                     req,
                     addr,
+                    ingress,
                     config,
                     device_manager,
                     pool,
@@ -2224,10 +2232,36 @@ impl SipServer {
         }
     }
 
+    async fn send_register_response(
+        socket: &Arc<UdpSocket>,
+        addr: SocketAddr,
+        ingress: RegistrationIngress,
+        response: &str,
+    ) -> Result<()> {
+        match ingress {
+            RegistrationIngress::Udp => {
+                socket.send_to(response.as_bytes(), addr).await?;
+                Ok(())
+            }
+            RegistrationIngress::Tcp(_) => {
+                let manager = crate::sip::transport::tcp::tcp_response_routes()
+                    .get(&addr)
+                    .map(|entry| entry.value().clone())
+                    .ok_or_else(|| anyhow::anyhow!("REGISTER TCP connection unavailable"))?;
+                if manager.send_to(&addr, response).await? {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("REGISTER TCP connection unavailable"))
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn send_register_challenge(
         device_id: &str,
         addr: SocketAddr,
+        ingress: RegistrationIngress,
         config: &SipConfig,
         devices: &DeviceManager,
         socket: &Arc<UdpSocket>,
@@ -2238,7 +2272,9 @@ impl SipServer {
         cseq: &str,
     ) -> Result<()> {
         let nonce = generate_nonce();
-        devices.register_nonces.issue(&nonce, device_id, addr);
+        devices
+            .register_nonces
+            .issue_bound(&nonce, device_id, addr, ingress);
         let auth_header = Parser::generate_www_authenticate_response(&config.realm, &nonce, None);
         let response = Parser::generate_response(
             401,
@@ -2253,7 +2289,7 @@ impl SipServer {
             ],
             None,
         );
-        Self::send_response(socket, addr, &response).await?;
+        Self::send_register_response(socket, addr, ingress, &response).await?;
         tracing::info!("REGISTER from {} - Challenge sent", device_id);
         Ok(())
     }
@@ -2262,6 +2298,7 @@ impl SipServer {
     async fn handle_register(
         req: SipRequest,
         addr: SocketAddr,
+        ingress: RegistrationIngress,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
@@ -2306,11 +2343,12 @@ impl SipServer {
         if nonce.as_deref().is_none_or(|nonce| {
             !device_manager
                 .register_nonces
-                .matches(nonce, &device_id, addr)
+                .matches_bound(nonce, &device_id, addr, ingress)
         }) {
             Self::send_register_challenge(
                 &device_id,
                 addr,
+                ingress,
                 config,
                 device_manager,
                 socket,
@@ -2345,7 +2383,7 @@ impl SipServer {
                 ],
                 None,
             );
-            Self::send_response(socket, addr, &response).await?;
+            Self::send_register_response(socket, addr, ingress, &response).await?;
             return Ok(());
         }
 
@@ -2374,16 +2412,18 @@ impl SipServer {
             }
         }
         if fingerprint.is_empty()
-            || !device_manager.register_nonces.accept(
+            || !device_manager.register_nonces.accept_bound(
                 nonce.as_deref().unwrap_or(""),
                 &device_id,
                 addr,
+                ingress,
                 &fingerprint,
             )
         {
             Self::send_register_challenge(
                 &device_id,
                 addr,
+                ingress,
                 config,
                 device_manager,
                 socket,
@@ -2431,7 +2471,7 @@ impl SipServer {
                         ],
                         None,
                     );
-                    Self::send_response(socket, addr, &response).await?;
+                    Self::send_register_response(socket, addr, ingress, &response).await?;
                     return Ok(());
                 }
             }
@@ -2482,7 +2522,7 @@ impl SipServer {
                 tracing::warn!("补齐设备 {} 的信令/流模式失败: {}", device_id, e);
             }
             device_manager
-                .register_authenticated(&device_id, addr, expires)
+                .register_authenticated(&device_id, addr, expires, ingress)
                 .await;
             if let Some(ref ws) = ws_state {
                 ws.broadcast(
@@ -2536,7 +2576,7 @@ impl SipServer {
             ],
             None,
         );
-        Self::send_response(socket, addr, &response).await?;
+        Self::send_register_response(socket, addr, ingress, &response).await?;
 
         Ok(())
     }
@@ -9611,6 +9651,46 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 mod dialog_tag_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn udp_registration_response_does_not_use_same_address_tcp_route() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let udp_peer = UdpSocket::bind(addr).await.unwrap();
+        let udp_server = Arc::new(UdpSocket::bind("[::1]:0").await.unwrap());
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (_, write) = client.into_split();
+        let manager = TcpConnectionManager::new();
+        manager.add_connection(addr, write).await;
+        let dummy: SocketAddr = "[::1]:2".parse().unwrap();
+        crate::sip::transport::tcp::tcp_response_routes().insert(dummy, manager.clone());
+        crate::sip::transport::tcp::tcp_response_routes().insert(addr, manager);
+        let (mut tcp_peer, _) = listener.accept().await.unwrap();
+        SipServer::send_register_response(
+            &udp_server,
+            addr,
+            RegistrationIngress::Udp,
+            "SIP/2.0 401 Unauthorized\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut buf = [0u8; 256];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), udp_peer.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n])
+            .unwrap()
+            .starts_with("SIP/2.0 401"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), tcp_peer.read(&mut buf))
+                .await
+                .is_err()
+        );
+        crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
+        crate::sip::transport::tcp::tcp_response_routes().remove(&dummy);
+    }
+
     #[test]
     fn register_digest_requires_request_uri_and_rejects_unsupported_qop() {
         let username = "device";
@@ -9677,6 +9757,7 @@ mod dialog_tag_tests {
         SipServer::handle_register(
             request,
             addr,
+            RegistrationIngress::Udp,
             &config,
             &manager,
             &state.pool,
@@ -9714,6 +9795,7 @@ mod dialog_tag_tests {
         SipServer::handle_register(
             Parser::parse_request(&base).unwrap(),
             addr,
+            RegistrationIngress::Udp,
             &config,
             &manager,
             &state.pool,
@@ -9749,6 +9831,7 @@ mod dialog_tag_tests {
             SipServer::handle_register(
                 request.clone(),
                 addr,
+                RegistrationIngress::Udp,
                 &config,
                 &manager,
                 &state.pool,
@@ -9775,6 +9858,7 @@ mod dialog_tag_tests {
         SipServer::handle_register(
             request.clone(),
             attacker.local_addr().unwrap(),
+            RegistrationIngress::Udp,
             &config,
             &manager,
             &state.pool,
@@ -9798,6 +9882,7 @@ mod dialog_tag_tests {
         SipServer::handle_register(
             request,
             addr,
+            RegistrationIngress::Udp,
             &config,
             &manager,
             &state.pool,
