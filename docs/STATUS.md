@@ -4,6 +4,12 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：三数据库 API 冒烟补充连接独立真实 ZLM，SQLite、PostgreSQL 16、
+MySQL 8 各为 103 项 OK、2 项 BAD，失败集合一致：脚本将 CSV 文本按 JSON 判错，
+以及故意不存在的 RTSP 源返回 404。push/start、push/stop 和 media_server/check
+本轮均通过；各实例顺序运行，临时数据库及 ZLM/MySQL 容器已清理。脚本即使出现
+BAD 仍返回退出码 0，结论以输出逐项核对；目标 Linux 主机和真机仍待验收。
+
 2026-11-08：在隔离 SQLite、PostgreSQL 16、MySQL 8 数据库上以同一当前后端二进制
 分别运行 `scripts/dialect_smoke.py`；三者均为 100 项 OK、5 项 BAD，失败集合一致：
 CSV 被脚本按 JSON 判错，以及 proxy/start、push/start、push/stop、media_server/check
