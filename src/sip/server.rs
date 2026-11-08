@@ -2224,6 +2224,41 @@ impl SipServer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn send_register_challenge(
+        device_id: &str,
+        addr: SocketAddr,
+        config: &SipConfig,
+        devices: &DeviceManager,
+        socket: &Arc<UdpSocket>,
+        via: &str,
+        from: &str,
+        to: &str,
+        call_id: &str,
+        cseq: &str,
+    ) -> Result<()> {
+        let nonce = generate_nonce();
+        devices.register_nonces.issue(&nonce, device_id, addr);
+        let auth_header = Parser::generate_www_authenticate_response(&config.realm, &nonce, None);
+        let response = Parser::generate_response(
+            401,
+            "Unauthorized",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("WWW-Authenticate", &auth_header),
+            ],
+            None,
+        );
+        Self::send_response(socket, addr, &response).await?;
+        tracing::info!("REGISTER from {} - Challenge sent", device_id);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn handle_register(
         req: SipRequest,
         addr: SocketAddr,
@@ -2265,29 +2300,27 @@ impl SipServer {
 
         let auth = req.header("authorization").cloned();
 
-        if auth.is_none() {
-            let nonce = generate_nonce();
-            let auth_header =
-                Parser::generate_www_authenticate_response(&config.realm, &nonce, None);
-            let response = Parser::generate_response(
-                401,
-                "Unauthorized",
-                &[
-                    ("Via", &via),
-                    ("From", &from),
-                    ("To", &to),
-                    ("Call-ID", &call_id),
-                    ("CSeq", &cseq),
-                    ("WWW-Authenticate", &auth_header),
-                ],
-                None,
-            );
-            Self::send_response(socket, addr, &response).await?;
-            tracing::info!(
-                "REGISTER from {} - Challenge sent (nonce: {})",
-                device_id,
-                nonce
-            );
+        let nonce = auth
+            .as_deref()
+            .and_then(|value| Self::parse_digest_params(value).get("nonce").cloned());
+        if nonce.as_deref().is_none_or(|nonce| {
+            !device_manager
+                .register_nonces
+                .matches(nonce, &device_id, addr)
+        }) {
+            Self::send_register_challenge(
+                &device_id,
+                addr,
+                config,
+                device_manager,
+                socket,
+                &via,
+                &from,
+                &to,
+                &call_id,
+                &cseq,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -2297,7 +2330,7 @@ impl SipServer {
             &device_id,
             &config.password,
             &config.realm,
-            &format!("sip:{}@{}:{}", device_id, config.ip, config.port),
+            &req.uri,
         ) {
             tracing::warn!("REGISTER from {} - Invalid credentials", device_id);
             let response = Parser::generate_response(
@@ -2313,6 +2346,54 @@ impl SipServer {
                 None,
             );
             Self::send_response(socket, addr, &response).await?;
+            return Ok(());
+        }
+
+        // Keep exact retransmissions idempotent; a different transaction using
+        // the same nonce must obtain a fresh challenge. Length-prefix fields so
+        // attacker-controlled separators cannot make distinct requests equal.
+        let mut ordered_headers: Vec<_> = req.headers.iter().collect();
+        ordered_headers.sort_by(|a, b| a.0.cmp(b.0));
+        let total_len = req.uri.len()
+            + req.body.as_ref().map_or(0, String::len)
+            + ordered_headers
+                .iter()
+                .map(|(key, value)| key.len() + value.len() + 32)
+                .sum::<usize>();
+        let mut fingerprint = String::new();
+        if total_len <= 8192 {
+            for field in std::iter::once(req.uri.as_str())
+                .chain(
+                    ordered_headers
+                        .iter()
+                        .flat_map(|(key, value)| [key.as_str(), value.as_str()]),
+                )
+                .chain(req.body.as_deref())
+            {
+                fingerprint.push_str(&format!("{}:{}", field.len(), field));
+            }
+        }
+        if fingerprint.is_empty()
+            || !device_manager.register_nonces.accept(
+                nonce.as_deref().unwrap_or(""),
+                &device_id,
+                addr,
+                &fingerprint,
+            )
+        {
+            Self::send_register_challenge(
+                &device_id,
+                addr,
+                config,
+                device_manager,
+                socket,
+                &via,
+                &from,
+                &to,
+                &call_id,
+                &cseq,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -2400,7 +2481,9 @@ impl SipServer {
             {
                 tracing::warn!("补齐设备 {} 的信令/流模式失败: {}", device_id, e);
             }
-            device_manager.register(&device_id, addr).await;
+            device_manager
+                .register_authenticated(&device_id, addr, expires)
+                .await;
             if let Some(ref ws) = ws_state {
                 ws.broadcast(
                     "deviceOnline",
@@ -5597,7 +5680,7 @@ f=v/1/96/1/2/1/1/0
         parsed.get("PTZCmd").cloned()
     }
 
-    fn validate_digest(auth: &str, username: &str, password: &str, realm: &str, uri: &str) -> bool {
+    fn parse_digest_params(auth: &str) -> std::collections::HashMap<String, String> {
         // Strip the leading "Digest " scheme keyword (RFC 2617). Without this
         // the parser would split the auth header at the first `,` and assign
         // "Digest username" as a key, causing `params.get("username")` to miss
@@ -5617,10 +5700,21 @@ f=v/1/96/1/2/1/1/0
             }
         }
 
+        params
+    }
+
+    fn validate_digest(auth: &str, username: &str, password: &str, realm: &str, uri: &str) -> bool {
+        let params = Self::parse_digest_params(auth);
         let username2 = params.get("username").map(|s| s.as_str()).unwrap_or("");
         let response = params.get("response").map(|s| s.as_str()).unwrap_or("");
         let nonce = params.get("nonce").map(|s| s.as_str()).unwrap_or("");
-        if username2 != username {
+        if username2 != username
+            || nonce.is_empty()
+            || params.get("realm").map(String::as_str) != Some(realm)
+            || params
+                .get("algorithm")
+                .is_some_and(|a| !a.eq_ignore_ascii_case("MD5"))
+        {
             return false;
         }
 
@@ -5628,10 +5722,13 @@ f=v/1/96/1/2/1/1/0
             "{:x}",
             Md5::digest(format!("{}:{}:{}", username, realm, password))
         );
-        // RFC 2617 §3.2.2.5: HA2 必须基于客户端 Authorization 头里的 "uri" 字段计算，
-        // 而不是 server 自己拼接的 Request-URI。客户端很可能发 sip:server_ip，
-        // server 端拼的 sip:device_id@server_ip:port 通常与客户端不一致，会导致 HA2 不匹配。
-        let digest_uri = params.get("uri").map(|s| s.as_str()).unwrap_or(uri);
+        // The authorization must bind the exact Request-URI on the wire.
+        let Some(digest_uri) = params.get("uri").map(String::as_str) else {
+            return false;
+        };
+        if digest_uri != uri {
+            return false;
+        }
         let ha2 = format!(
             "{:x}",
             Md5::digest(format!("{}:{}", "REGISTER", digest_uri))
@@ -5642,17 +5739,29 @@ f=v/1/96/1/2/1/1/0
         // 历史 bug: 此处把 cnonce 写死为 "00000001"，导致所有走 qop=auth 的设备
         // REGISTER 都会因为 expected != response 被 403 拒绝。
         let expected = match params.get("qop").map(|s| s.as_str()) {
-            Some(qop) if qop.split(',').any(|q| q.trim() == "auth") => {
-                let nc = params.get("nc").map(|s| s.as_str()).unwrap_or("00000001");
-                let cnonce = params.get("cnonce").map(|s| s.as_str()).unwrap_or("");
+            Some("auth") => {
+                let Some(nc) = params.get("nc").map(String::as_str) else {
+                    return false;
+                };
+                let Some(cnonce) = params.get("cnonce").map(String::as_str) else {
+                    return false;
+                };
+                if nc.len() != 8
+                    || !nc.bytes().all(|b| b.is_ascii_hexdigit())
+                    || nc == "00000000"
+                    || cnonce.is_empty()
+                {
+                    return false;
+                }
                 format!(
                     "{:x}",
                     Md5::digest(format!("{}:{}:{}:{}:auth:{}", ha1, nonce, nc, cnonce, ha2))
                 )
             }
-            _ => {
+            None => {
                 format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
             }
+            Some(_) => return false,
         };
 
         expected == response
@@ -9501,6 +9610,216 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[test]
+    fn register_digest_requires_request_uri_and_rejects_unsupported_qop() {
+        let username = "device";
+        let realm = "realm";
+        let password = "password";
+        let uri = "sip:platform@example.test";
+        let nonce = "issued-nonce";
+        let ha1 = format!(
+            "{:x}",
+            Md5::digest(format!("{username}:{realm}:{password}"))
+        );
+        let ha2 = format!("{:x}", Md5::digest(format!("REGISTER:{uri}")));
+        let response = format!("{:x}", Md5::digest(format!("{ha1}:{nonce}:{ha2}")));
+        let auth = format!("Digest username=\"{username}\", realm=\"{realm}\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{response}\"");
+        assert!(SipServer::validate_digest(
+            &auth, username, password, realm, uri
+        ));
+        assert!(!SipServer::validate_digest(
+            &auth,
+            username,
+            password,
+            realm,
+            "sip:other@example.test"
+        ));
+        assert!(!SipServer::validate_digest(
+            &format!("{auth}, qop=invalid"),
+            username,
+            password,
+            realm,
+            uri
+        ));
+        assert!(!SipServer::validate_digest(
+            &auth.replace(&format!(", uri=\"{uri}\""), ""),
+            username,
+            password,
+            realm,
+            uri
+        ));
+    }
+
+    #[tokio::test]
+    async fn register_rejects_valid_digest_with_unchallenged_nonce() {
+        let state = crate::test_support::app_state().await;
+        let config = Arc::new(SipConfig::default());
+        let manager = Arc::new(DeviceManager::new());
+        let pending = Arc::new(PendingRequestManager::new());
+        let platform = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let device = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = device.local_addr().unwrap();
+        let device_id = "34020000001320000001";
+        let uri = "sip:platform@127.0.0.1:5060";
+        let nonce = "attacker-chosen-nonce";
+        let ha1 = format!(
+            "{:x}",
+            Md5::digest(format!(
+                "{}:{}:{}",
+                device_id, config.realm, config.password
+            ))
+        );
+        let ha2 = format!("{:x}", Md5::digest(format!("REGISTER:{}", uri)));
+        let digest = format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)));
+        let raw = format!("REGISTER {uri} SIP/2.0\r\nVia: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\nFrom: <sip:{device_id}@example.test>;tag=x\r\nTo: <sip:{device_id}@example.test>\r\nCall-ID: fake-nonce-test\r\nCSeq: 1 REGISTER\r\nAuthorization: Digest username=\"{device_id}\", realm=\"{}\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{digest}\"\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n", config.realm);
+        let request = Parser::parse_request(&raw).unwrap();
+        SipServer::handle_register(
+            request,
+            addr,
+            &config,
+            &manager,
+            &state.pool,
+            &platform,
+            &None,
+            &pending,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut buf = [0u8; 2048];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), device.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n])
+            .unwrap()
+            .starts_with("SIP/2.0 401"));
+        assert!(manager.get(device_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn register_challenge_binds_source_and_allows_exact_retransmission() {
+        let state = crate::test_support::app_state().await;
+        let config = Arc::new(SipConfig::default());
+        let manager = Arc::new(DeviceManager::new());
+        let pending = Arc::new(PendingRequestManager::new());
+        let platform = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let device = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let attacker = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = device.local_addr().unwrap();
+        let device_id = "34020000001320000001";
+        let uri = "sip:platform@127.0.0.1:5060";
+        let base = format!("REGISTER {uri} SIP/2.0\r\nVia: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\nFrom: <sip:{device_id}@example.test>;tag=x\r\nTo: <sip:{device_id}@example.test>\r\nCall-ID: nonce-flow-test\r\nCSeq: 1 REGISTER\r\nExpires: 3600\r\nContent-Length: 0\r\n\r\n");
+        SipServer::handle_register(
+            Parser::parse_request(&base).unwrap(),
+            addr,
+            &config,
+            &manager,
+            &state.pool,
+            &platform,
+            &None,
+            &pending,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut buf = [0u8; 4096];
+        let (n, _) = device.recv_from(&mut buf).await.unwrap();
+        let challenge = Parser::parse_response(std::str::from_utf8(&buf[..n]).unwrap()).unwrap();
+        assert_eq!(challenge.status_code(), 401);
+        let nonce =
+            SipServer::parse_digest_params(challenge.headers.get("www-authenticate").unwrap())
+                .remove("nonce")
+                .unwrap();
+        let ha1 = format!(
+            "{:x}",
+            Md5::digest(format!(
+                "{}:{}:{}",
+                device_id, config.realm, config.password
+            ))
+        );
+        let ha2 = format!("{:x}", Md5::digest(format!("REGISTER:{}", uri)));
+        let digest = format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)));
+        let auth = format!("Digest username=\"{device_id}\", realm=\"{}\", nonce=\"{nonce}\", uri=\"{uri}\", response=\"{digest}\"", config.realm);
+        let mut request = Parser::parse_request(&base).unwrap();
+        request.headers.insert("authorization".into(), auth);
+        request.headers.insert("cseq".into(), "2 REGISTER".into());
+        for _ in 0..2 {
+            SipServer::handle_register(
+                request.clone(),
+                addr,
+                &config,
+                &manager,
+                &state.pool,
+                &platform,
+                &None,
+                &pending,
+                None,
+            )
+            .await
+            .unwrap();
+            loop {
+                let (n, _) =
+                    tokio::time::timeout(Duration::from_secs(2), device.recv_from(&mut buf))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let text = std::str::from_utf8(&buf[..n]).unwrap();
+                if text.starts_with("SIP/2.0") {
+                    assert!(text.starts_with("SIP/2.0 200"));
+                    break;
+                }
+            }
+        }
+        SipServer::handle_register(
+            request.clone(),
+            attacker.local_addr().unwrap(),
+            &config,
+            &manager,
+            &state.pool,
+            &platform,
+            &None,
+            &pending,
+            None,
+        )
+        .await
+        .unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), attacker.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n])
+            .unwrap()
+            .starts_with("SIP/2.0 401"));
+        assert_eq!(manager.get_address(device_id).await, Some(addr));
+        assert_eq!(manager.authenticated_address(device_id).await, Some(addr));
+        request.headers.insert("cseq".into(), "3 REGISTER".into());
+        SipServer::handle_register(
+            request,
+            addr,
+            &config,
+            &manager,
+            &state.pool,
+            &platform,
+            &None,
+            &pending,
+            None,
+        )
+        .await
+        .unwrap();
+        loop {
+            let (n, _) = tokio::time::timeout(Duration::from_secs(2), device.recv_from(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            let text = std::str::from_utf8(&buf[..n]).unwrap();
+            if text.starts_with("SIP/2.0") {
+                assert!(text.starts_with("SIP/2.0 401"));
+                break;
+            }
+        }
+    }
 
     #[test]
     fn playback_response_extracts_all_routing_headers_without_splitting_quoted_commas() {

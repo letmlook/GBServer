@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
@@ -24,6 +25,8 @@ pub struct Device {
     pub password: Option<String>,
     pub custom_name: Option<String>,
     pub addr: Option<SocketAddr>,
+    /// Proof from an authenticated REGISTER handled by this process only.
+    authenticated_until: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,16 +37,38 @@ pub enum TransportMode {
 
 pub struct DeviceManager {
     devices: Arc<RwLock<HashMap<String, Device>>>,
+    pub(crate) register_nonces: super::register_nonce::RegisterNonces,
 }
 
 impl DeviceManager {
     pub fn new() -> Self {
         Self {
             devices: Arc::new(RwLock::new(HashMap::new())),
+            register_nonces: super::register_nonce::RegisterNonces::default(),
         }
     }
 
     pub async fn register(&self, device_id: &str, addr: SocketAddr) {
+        self.register_inner(device_id, addr, None).await;
+    }
+
+    pub(crate) async fn register_authenticated(
+        &self,
+        device_id: &str,
+        addr: SocketAddr,
+        expires: u64,
+    ) {
+        // Recovery proof is deliberately bounded even if a peer requests a very long registration.
+        let until = Instant::now().checked_add(Duration::from_secs(expires.min(86_400)));
+        self.register_inner(device_id, addr, until).await;
+    }
+
+    async fn register_inner(
+        &self,
+        device_id: &str,
+        addr: SocketAddr,
+        authenticated_until: Option<Instant>,
+    ) {
         let mut guard = self.devices.write().await;
         let now = Utc::now();
         let device = Device {
@@ -63,6 +88,7 @@ impl DeviceManager {
             password: None,
             custom_name: None,
             addr: Some(addr),
+            authenticated_until,
         };
         guard.insert(device_id.to_string(), device);
     }
@@ -71,6 +97,7 @@ impl DeviceManager {
         let mut guard = self.devices.write().await;
         if let Some(d) = guard.get_mut(device_id) {
             d.online = false;
+            d.authenticated_until = None;
         }
     }
 
@@ -106,6 +133,7 @@ impl DeviceManager {
             password: None,
             custom_name: device.custom_name.clone(),
             addr,
+            authenticated_until: None,
         };
         self.devices
             .write()
@@ -121,10 +149,28 @@ impl DeviceManager {
             .and_then(|d| d.addr)
     }
 
+    /// A DB-restored address or keepalive alone is not current registration proof.
+    pub async fn authenticated_address(&self, device_id: &str) -> Option<SocketAddr> {
+        let guard = self.devices.read().await;
+        let device = guard.get(device_id)?;
+        if device.online
+            && device
+                .authenticated_until
+                .is_some_and(|until| Instant::now() < until)
+        {
+            device.addr
+        } else {
+            None
+        }
+    }
+
     pub async fn set_online(&self, device_id: &str, online: bool) {
         let mut guard = self.devices.write().await;
         if let Some(d) = guard.get_mut(device_id) {
             d.online = online;
+            if !online {
+                d.authenticated_until = None;
+            }
             d.keepalive_time = Utc::now();
         }
     }
@@ -222,6 +268,29 @@ pub fn keepalive_source_allowed(source: &SocketAddr, registered_ip: Option<&str>
 #[cfg(test)]
 mod keepalive_gate_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn recovery_identity_requires_unexpired_registration_this_process() {
+        let mgr = DeviceManager::new();
+        let addr: SocketAddr = "192.0.2.10:5060".parse().unwrap();
+        let cached = crate::db::device::Device {
+            device_id: "device".into(),
+            ip: Some("192.0.2.10".into()),
+            port: Some(5060),
+            ..Default::default()
+        };
+        mgr.restore(&cached).await;
+        assert!(mgr.authenticated_address("device").await.is_none());
+        mgr.register("device", addr).await;
+        assert!(mgr.authenticated_address("device").await.is_none());
+        mgr.register_authenticated("device", addr, 60).await;
+        assert_eq!(mgr.authenticated_address("device").await, Some(addr));
+        mgr.unregister("device").await;
+        mgr.update_keepalive("device").await;
+        assert!(mgr.authenticated_address("device").await.is_none());
+        mgr.register_authenticated("device", addr, 0).await;
+        assert!(mgr.authenticated_address("device").await.is_none());
+    }
 
     /// **安全回归**：陌生来源 IP 的 Keepalive 必须被拒 —— 否则它能把已注册
     /// 设备的信令地址改到自己名下（设备劫持 + 平台变成出站跳板）。
