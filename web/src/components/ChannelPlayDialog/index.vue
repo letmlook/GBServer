@@ -453,6 +453,8 @@ const playData = ref<PlayStartResult | null>(null)
 let stopRequest: Promise<void> | null = null
 let closeStopWarningShown = false
 let closeCleanupRequested = false
+let playbackTask: Promise<void> | null = null
+let openGeneration = 0
 
 /**
  * 协议切换：
@@ -609,12 +611,24 @@ async function copyUrl(url: string, label: string) {
 }
 
 async function onOpen() {
-  if (!props.channel) return
-  await playChannel()
+  const generation = ++openGeneration
+  if (playbackTask) await playbackTask
+  if (stopRequest) {
+    try { await stopRequest } catch { return }
+  }
+  if (generation !== openGeneration || !props.modelValue || !props.channel) return
+  const task = playChannel()
+  playbackTask = task
+  try {
+    await task
+  } finally {
+    if (playbackTask === task) playbackTask = null
+  }
 }
 
 async function onClose() {
   if (closeCleanupRequested) return
+  openGeneration++
   closeCleanupRequested = true
   // 关对话框时一定要先停云台，避免用户按住后关闭弹窗让设备一直转动
   stopMove()

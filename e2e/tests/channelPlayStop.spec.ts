@@ -175,3 +175,40 @@ test('关闭先于起流响应时，迟到的流也必须被停掉', async ({ pa
   releaseStart()
   await expect.poll(() => stopCalls, { timeout: 5000 }).toBe(1)
 })
+
+test('快速关闭并重开时，先清理旧起流再发新起流', async ({ page }) => {
+  let releaseFirst: () => void = () => {}
+  const firstPending = new Promise<void>((resolve) => { releaseFirst = resolve })
+  const events: string[] = []
+  await page.route('**/common/channel/list*', (route) => route.fulfill({
+    json: { code: 0, msg: '成功', data: { total: 1, list: [{
+      id: 991, deviceId: DEVICE, channelId: CHANNEL, name: '重开回归通道', status: 'ON'
+    }] } }
+  }))
+  await page.route(`**/play/start/${DEVICE}/${CHANNEL}`, async (route) => {
+    const count = events.filter((event) => event === 'start').length
+    events.push('start')
+    if (count === 0) await firstPending
+    await route.fulfill({ json: { code: 0, msg: '成功', data: {
+      app: 'rtp', stream: 'reopen-test', playUrl: 'rtsp://127.0.0.1:554/rtp/reopen-test'
+    } } })
+  })
+  await page.route(`**/play/stop/${DEVICE}/${CHANNEL}`, (route) => {
+    events.push('stop')
+    return route.fulfill({ json: { code: 0, msg: '成功', data: null } })
+  })
+  await page.goto('/#/channel', { waitUntil: 'domcontentloaded' })
+  const row = page.getByRole('row', { name: /重开回归通道/ })
+  await expect(row).toBeVisible()
+  await row.getByRole('button', { name: '播放' }).click()
+  await expect.poll(() => events.length).toBe(1)
+  const dialog = page.getByRole('dialog', { name: /重开回归通道/ })
+  await dialog.getByRole('button', { name: '关闭此对话框' }).click()
+  await expect(dialog).toBeHidden()
+  await row.getByRole('button', { name: '播放' }).click()
+  await expect(dialog).toBeVisible()
+  await page.waitForTimeout(300)
+  expect(events).toEqual(['start'])
+  releaseFirst()
+  await expect.poll(() => events.slice(0, 3)).toEqual(['start', 'stop', 'start'])
+})
