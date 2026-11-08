@@ -111,6 +111,48 @@ async fn exercise(pool: Pool) {
         Some(2)
     );
     journal::delete(&pool, &pending.stream_id).await.unwrap();
+
+    let mut dialog = sample_record();
+    dialog.state = "inviting".into();
+    dialog.remote_tag = None;
+    journal::insert(&pool, &dialog).await.unwrap();
+    assert!(!journal::activate_dialog(&pool, &dialog.stream_id, "")
+        .await
+        .unwrap());
+    assert!(
+        journal::activate_dialog(&pool, &dialog.stream_id, "device-tag")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !journal::activate_dialog(&pool, &dialog.stream_id, "different-tag")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        journal::get(&pool, &dialog.stream_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .remote_tag
+            .as_deref(),
+        Some("device-tag")
+    );
+    assert!(journal::mark_cleanup_pending(&pool, &dialog.stream_id)
+        .await
+        .unwrap());
+    assert!(
+        !journal::activate_dialog(&pool, &dialog.stream_id, "late-tag")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        journal::reserve_cseq(&pool, &dialog.stream_id)
+            .await
+            .unwrap(),
+        Some(2)
+    );
+    journal::delete(&pool, &dialog.stream_id).await.unwrap();
 }
 
 #[tokio::test]

@@ -61,6 +61,29 @@ pub async fn get(pool: &Pool, stream_id: &str) -> sqlx::Result<Option<RecoveryRe
     })
 }
 
+/// Complete a previously journaled INVITE exactly once; late responses cannot
+/// replace the established tag or revive an entry already being cleaned up.
+pub async fn activate_dialog(pool: &Pool, stream_id: &str, remote_tag: &str) -> sqlx::Result<bool> {
+    if remote_tag.is_empty() {
+        return Ok(false);
+    }
+    let sql = pool.sql("UPDATE gb_playback_recovery SET remote_tag = ?, state = 'active' WHERE stream_id = ? AND state = 'inviting' AND remote_tag IS NULL AND local_tag IS NOT NULL AND LENGTH(local_tag) > 0");
+    let result = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(remote_tag)
+            .bind(stream_id)
+            .execute(p)
+    })?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Preserve an established dialog for explicit cleanup after a local failure.
+pub async fn mark_cleanup_pending(pool: &Pool, stream_id: &str) -> sqlx::Result<bool> {
+    let sql = pool.sql("UPDATE gb_playback_recovery SET state = 'cleanup_pending' WHERE stream_id = ? AND state = 'active'");
+    let result = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(stream_id).execute(p) })?;
+    Ok(result.rows_affected == 1)
+}
+
 /// CAS reservation is committed by the database before the caller can send a request.
 pub async fn reserve_cseq(pool: &Pool, stream_id: &str) -> sqlx::Result<Option<i64>> {
     loop {
