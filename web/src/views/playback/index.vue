@@ -99,6 +99,7 @@ const playerLoading = ref(false)
 const records = ref<any[]>([])
 const currentRecord = ref<any>(null)
 const currentStreamId = ref('')
+const activePlayback = ref<{ deviceId: string; channelId: string; streamId: string } | null>(null)
 const playUrl = ref('')
 const seekPos = ref(0)
 const duration = ref<number | null>(null)
@@ -234,10 +235,12 @@ function playbackDuration(start: unknown, end: unknown): number | null {
 }
 
 async function onSelect(row: any) {
-  currentRecord.value = row
+  if (playerLoading.value) return
+  const { deviceId, channelId } = form
   playerLoading.value = true
   try {
-    const res = await startPlayback(form.deviceId, form.channelId, {
+    if (activePlayback.value) await stopCurrentPlayback()
+    const res = await startPlayback(deviceId, channelId, {
       startTime: row.startTime,
       endTime: row.endTime
     })
@@ -245,12 +248,14 @@ async function onSelect(row: any) {
     if (!data?.streamId) {
       throw new Error(res.msg || '后端未返回回放流')
     }
+    activePlayback.value = { deviceId, channelId, streamId: data.streamId }
+    currentStreamId.value = data.streamId
     // 优先 HLS（浏览器兼容性最好），其次 FLV；RTSP 仅作最后兜底
     const url = data.hls || data.flvUrl || data.playUrl || ''
     if (!url) {
       throw new Error('后端未返回可用的播放地址')
     }
-    currentStreamId.value = data.streamId
+    currentRecord.value = row
     playUrl.value = url
     duration.value = playbackDuration(data.startTime ?? row.startTime, data.endTime ?? row.endTime)
     seekPos.value = 0
@@ -281,13 +286,27 @@ async function onSeek(value: number | number[]) {
 }
 
 async function onStop() {
-  if (!currentStreamId.value) return
-  await stopPlayback(form.deviceId, form.channelId, currentStreamId.value)
+  if (!activePlayback.value || playerLoading.value) return
+  playerLoading.value = true
+  try {
+    await stopCurrentPlayback()
+    ElMessage.success('已停止')
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '回放停止失败')
+  } finally {
+    playerLoading.value = false
+  }
+}
+
+async function stopCurrentPlayback() {
+  const session = activePlayback.value
+  if (!session) return
+  await stopPlayback(session.deviceId, session.channelId, session.streamId)
+  activePlayback.value = null
   currentStreamId.value = ''
   playUrl.value = ''
   currentRecord.value = null
   destroyPlayers()
-  ElMessage.success('已停止')
 }
 
 onMounted(() => {})
