@@ -4,6 +4,14 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：Docker Desktop Linux/ARM64 的 release 后端容器、独立 ZLM 容器及
+SIP RTP Mock 执行 cloudRecord、playUrls 和 webrtcMedia 的 Chromium 用例，5/5
+通过；新 MP4 为 109266 字节，Range 播放及删除通过，FLV 可拉取，WebRTC ICE
+connected、接收 14085 字节并解码 2 帧。首次运行 FLV 和 WebRTC 通过但录像未产出；
+补上 Compose 规定的 `TZ=Asia/Shanghai` 并等待媒体节点健康检查后重跑通过，因同时
+调整两项不能单独确定失败原因。测试使用隔离 SQLite 和临时容器并已清理；不是目标
+Linux 主机 host 网络或真机验收。
+
 2026-11-08：当前代码在 Docker Desktop Linux/ARM64 构建 release 镜像成功
 （镜像 `sha256:b33a175ed4eb2db5d911bf656950ff29cf73328a61a542b76b7e30acdbdd9a6d`）；
 隔离容器以临时 SQLite 库验证健康、管理员登录、静态首页及三个版本接口通过。
