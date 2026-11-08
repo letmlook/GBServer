@@ -7950,13 +7950,21 @@ f=v/1/96/1/2/1/1/0
             self.invite_session_manager
                 .set_zlm_stream_by_call_id(&call_id, zlm_stream_id, "rtp")
                 .await;
-            if let Err(error) = self.send_request_to(device_addr, &message).await {
-                self.pending_invites.remove(&call_id);
-                self.media_waiter_manager().cancel_by_call_id(&call_id);
-                self.session_manager.remove(&call_id).await;
-                self.invite_session_manager.remove(&call_id).await;
-                cleanup.armed = false;
-                return Err(error);
+            match self.send_request_to(device_addr, &message).await {
+                Ok(sent_over_tcp) => {
+                    let transport = if sent_over_tcp { "tcp" } else { "udp" };
+                    self.invite_session_manager
+                        .set_signaling_transport(&call_id, transport)
+                        .await;
+                }
+                Err(error) => {
+                    self.pending_invites.remove(&call_id);
+                    self.media_waiter_manager().cancel_by_call_id(&call_id);
+                    self.session_manager.remove(&call_id).await;
+                    self.invite_session_manager.remove(&call_id).await;
+                    cleanup.armed = false;
+                    return Err(error);
+                }
             }
             tracing::info!(
                 "Sent PLAYBACK INVITE to device={} channel={} stream={} call_id={}",
@@ -9440,6 +9448,72 @@ mod dialog_tag_tests {
     use super::*;
 
     #[tokio::test]
+    async fn playback_invite_records_actual_tcp_transport() {
+        use tokio::io::AsyncReadExt;
+        let state = crate::test_support::app_state().await;
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (_, write) = client.into_split();
+        let manager = TcpConnectionManager::new();
+        manager.add_connection(address, write).await;
+        let dummy: SocketAddr = "[::1]:1".parse().unwrap();
+        // Two entries suppress the by-IP fallback for other parallel IPv6 tests;
+        // this test still selects its exact address.
+        crate::sip::transport::tcp::tcp_response_routes().insert(dummy, manager.clone());
+        crate::sip::transport::tcp::tcp_response_routes().insert(address, manager);
+        let server = Arc::new(SipServer::new(
+            SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        *server.socket.write().await = Some(Arc::new(UdpSocket::bind("[::1]:0").await.unwrap()));
+        server.device_manager.register("tcp-device", address).await;
+        let worker = server.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .send_playback_invite_and_wait(
+                    "tcp-device",
+                    "channel",
+                    "2026-01-01T00:00:00",
+                    "2026-01-01T00:01:00",
+                    "tcp-stream",
+                    30001,
+                    30,
+                )
+                .await
+        });
+        let (mut remote, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(2), remote.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let call_id = std::str::from_utf8(&buf[..n])
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("Call-ID: "))
+            .unwrap()
+            .trim()
+            .to_string();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let session = server.invite_session_manager.get(&call_id).await.unwrap();
+                if session.signaling_transport.as_deref() == Some("tcp") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual TCP transport was not recorded");
+        task.abort();
+        let _ = task.await;
+        crate::sip::transport::tcp::tcp_response_routes().remove(&address);
+        crate::sip::transport::tcp::tcp_response_routes().remove(&dummy);
+    }
+
+    #[tokio::test]
     async fn startup_restores_journaled_ssrc_before_new_allocations() {
         let state = crate::test_support::app_state().await;
         crate::db::playback_recovery::ensure_table(&state.pool)
@@ -9560,6 +9634,17 @@ mod dialog_tag_tests {
             .unwrap()
             .trim()
             .to_string();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let current = server.invite_session_manager.get(&call_id).await.unwrap();
+                if current.signaling_transport.as_deref() == Some("udp") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual transport was not recorded");
         assert!(
             server
                 .invite_session_manager

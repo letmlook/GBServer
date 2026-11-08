@@ -168,6 +168,8 @@ pub struct InviteSession {
     pub created_at: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
     pub peer_addr: SocketAddr,
+    /// Actual transport selected for the outbound INVITE; None means unknown.
+    pub signaling_transport: Option<String>,
     pub sdp_request: Option<String>,
     pub sdp_response: Option<String>,
     pub timeout_seconds: u64,
@@ -226,6 +228,7 @@ impl InviteSession {
             created_at: Utc::now(),
             last_activity: Utc::now(),
             peer_addr,
+            signaling_transport: None,
             sdp_request: None,
             sdp_response: None,
             timeout_seconds: 60,
@@ -587,6 +590,18 @@ impl InviteSessionManager {
             return false;
         };
         session.set_zlm_stream(stream_id, app);
+        let snapshot = session.clone();
+        drop(guard);
+        self.sync_to_store(&snapshot);
+        true
+    }
+
+    pub async fn set_signaling_transport(&self, call_id: &str, transport: &str) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        session.signaling_transport = Some(transport.to_owned());
         let snapshot = session.clone();
         drop(guard);
         self.sync_to_store(&snapshot);

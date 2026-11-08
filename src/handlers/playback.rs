@@ -392,6 +392,7 @@ mod command_state_tests {
         session.set_local_dialog("local", 1);
         session.set_remote_tag("remote");
         let owned_ssrc = sip.test_playback_lease("device", "channel").unwrap();
+        session.signaling_transport = Some("udp".into());
         assert_eq!(owned_ssrc.ssrc(), "1200000001");
         session.ssrc = Some(owned_ssrc.ssrc().to_string());
         sip.invite_session_manager()
@@ -422,6 +423,7 @@ mod command_state_tests {
         assert_eq!(saved.ssrc, "1200000001");
         assert_eq!(saved.last_cseq, 4);
         assert_eq!(saved.state, "cleanup_pending");
+        assert_eq!(saved.transport, "udp");
         assert_eq!(saved.remote_tag.as_deref(), Some("remote"));
         sip.invite_session_manager().remove("before-insert").await;
         assert!(sip.ssrc_manager().get("1200000001").is_some());
@@ -944,7 +946,7 @@ impl Drop for PlaybackStartGuard {
                                     device_id: dialog.device_id.clone(), channel_id: dialog.channel_id.clone(),
                                     ssrc: ssrc.clone(), peer_addr: dialog.peer_addr.to_string(),
                                     // A persisted socket address does not establish the original transport.
-                                    transport: "unknown".into(), local_tag: dialog.local_tag.clone(),
+                                    transport: dialog.signaling_transport.clone().unwrap_or_else(|| "unknown".into()), local_tag: dialog.local_tag.clone(),
                                     remote_tag: dialog.remote_tag.clone(),
                                     media_server_id: recovery.media_server_id.clone().unwrap_or_default(),
                                     app: recovery.app.clone(), state: "cleanup_pending".into(),
