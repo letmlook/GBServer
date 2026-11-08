@@ -98,7 +98,7 @@ mod command_state_tests {
             .unwrap()
             .0;
         assert_ne!(retry.code, 0);
-        assert!(retry.msg.contains("重启"));
+        assert!(retry.msg.contains("尚未恢复"));
     }
 
     #[tokio::test]
@@ -273,6 +273,9 @@ mod command_state_tests {
         let mut recovery = manager.get(&stream).await.unwrap();
         recovery.call_id = Some("before-insert".into());
         recovery.source = "gb28181_playback_invite".into();
+        recovery.device_id = "device".into();
+        recovery.channel_id = "channel".into();
+        recovery.media_server_id = Some("zlm-test".into());
         manager.remove(&stream).await;
         let sip = Arc::new(crate::sip::SipServer::new(
             crate::config::SipConfig::default(),
@@ -289,6 +292,7 @@ mod command_state_tests {
         session.status = InviteSessionStatus::Active;
         session.set_local_dialog("local", 1);
         session.set_remote_tag("remote");
+        session.ssrc = Some("1200000001".into());
         sip.invite_session_manager().create(session).await;
         let guard = PlaybackStartGuard {
             sip,
@@ -307,6 +311,22 @@ mod command_state_tests {
         })
         .await
         .expect("recovery session missing");
+        let saved = crate::db::playback_recovery::get(&state.pool, &stream)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.call_id, "before-insert");
+        assert_eq!(saved.ssrc, "1200000001");
+        assert_eq!(saved.last_cseq, 4);
+        assert_eq!(saved.state, "cleanup_pending");
+        assert_eq!(saved.remote_tag.as_deref(), Some("remote"));
+        let mut restarted = crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        );
+        assert_eq!(restarted.restore_playback_ssrcs().await.unwrap(), 1);
+        assert!(restarted.ssrc_manager().get("1200000001").is_some());
     }
 
     #[tokio::test]
@@ -756,6 +776,26 @@ impl Drop for PlaybackStartGuard {
                     if let Some(playback) = playback { playback.remove(&stream_id).await; }
                 } else {
                     if let (Some(playback), Some(recovery)) = (playback, recovery_session) {
+                        if let Some(dialog) = sip.invite_session_manager().get(&call_id).await {
+                            if let Some(ssrc) = dialog.ssrc.as_ref() {
+                                let record = crate::db::playback_recovery::RecoveryRecord {
+                                    stream_id: stream_id.clone(), call_id: call_id.clone(),
+                                    device_id: dialog.device_id.clone(), channel_id: dialog.channel_id.clone(),
+                                    ssrc: ssrc.clone(), peer_addr: dialog.peer_addr.to_string(),
+                                    // A persisted socket address does not establish the original transport.
+                                    transport: "unknown".into(), local_tag: dialog.local_tag.clone(),
+                                    remote_tag: dialog.remote_tag.clone(),
+                                    media_server_id: recovery.media_server_id.clone().unwrap_or_default(),
+                                    app: recovery.app.clone(), state: "cleanup_pending".into(),
+                                    last_cseq: i64::from(dialog.invite_cseq),
+                                };
+                                if let Err(error) = crate::db::playback_recovery::insert(sip.database_pool(), &record).await {
+                                    tracing::error!(%call_id, %stream_id, "持久化待清理回放失败，记录仅保存在当前进程: {}", error);
+                                }
+                            } else {
+                                tracing::error!(%call_id, %stream_id, "回放缺少 SSRC，无法持久化恢复记录");
+                            }
+                        }
                         playback.mark_cleanup_pending(recovery).await;
                     }
                     tracing::error!(%call_id, %stream_id, "BYE 未发送，保留回放会话供后续重试；设备结束状态未确认");
@@ -1465,7 +1505,7 @@ pub async fn playback_recovery_list(
         (key, serde_json::json!({
             "streamId": s.stream_id, "deviceId": s.device_id, "channelId": s.channel_id,
             "callId": s.call_id, "status": "recovery_required", "deviceResult": "unconfirmed", "retryable": false,
-            "retryReason": "服务重启后的 SIP 对话尚未恢复，暂不能重试"
+            "retryReason": "已保存的 SIP 对话尚未恢复，暂不能重试"
         }))
     }));
     rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1508,7 +1548,7 @@ pub async fn playback_recovery_retry(
             .is_some()
         {
             return Ok(Json(ApiResult::error(
-                "服务重启后的 SIP 对话尚未恢复，暂不能重试",
+                "已保存的 SIP 对话尚未恢复，暂不能重试",
             )));
         }
         return Ok(Json(ApiResult::error("没有待处理的回放会话")));

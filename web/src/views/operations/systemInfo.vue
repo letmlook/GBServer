@@ -69,7 +69,7 @@
         <el-table-column prop="streamId" label="流 ID" min-width="190" show-overflow-tooltip />
         <el-table-column label="设备结果" width="120"><template #default>未确认</template></el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
-          <template #default="{ row }"><span v-if="row.retryable === false" :title="row.retryReason">重启后待恢复</span><el-button v-else link type="primary" :loading="retrying === row.streamId" :disabled="retrying !== ''" @click="retryRecovery(row.streamId)">重试清理</el-button></template>
+          <template #default="{ row }"><span v-if="row.retryable === false" :title="row.retryReason">待对话恢复</span><el-button v-else link type="primary" :loading="retrying === row.streamId" :disabled="retrying !== ''" @click="retryRecovery(row.streamId)">重试清理</el-button></template>
         </el-table-column>
       </el-table>
       <el-pagination v-if="recoveryTotal > recoveryPageSize" class="recovery-pagination" layout="prev, pager, next" :total="recoveryTotal" :page-size="recoveryPageSize" v-model:current-page="recoveryPage" @current-change="loadRecovery" />

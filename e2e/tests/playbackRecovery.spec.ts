@@ -72,14 +72,14 @@ test('重启后保留的记录显示待恢复且不能发送重试', async ({ pa
   await page.route('**/playback/recovery?*', route => route.fulfill({ json: {
     code: 0, msg: '成功', data: { total: 1, offset: 0, limit: 20, items: [{
       streamId: 'persisted-stream', deviceId: 'dev', channelId: 'ch', callId: 'call', status: 'recovery_required',
-      deviceResult: 'unconfirmed', retryable: false, retryReason: '服务重启后的 SIP 对话尚未恢复，暂不能重试'
+      deviceResult: 'unconfirmed', retryable: false, retryReason: '已保存的 SIP 对话尚未恢复，暂不能重试'
     }] }
   } }))
   await page.route('**/playback/recovery/**/retry', route => { retries++; return route.abort() })
   await page.goto('/#/operations/systemInfo', { waitUntil: 'domcontentloaded' })
   const card = page.getByTestId('playback-recovery')
   await expect(card).toContainText('persisted-stream')
-  await expect(card).toContainText('重启后待恢复')
+  await expect(card).toContainText('待对话恢复')
   await expect(card.getByRole('button', { name: '重试清理' })).toHaveCount(0)
   expect(retries).toBe(0)
 })

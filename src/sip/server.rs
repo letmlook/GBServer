@@ -710,6 +710,10 @@ pub struct SipServer {
 }
 
 impl SipServer {
+    pub(crate) fn database_pool(&self) -> &Pool {
+        &self.pool
+    }
+
     /// Quarantine journaled identifiers before the server accepts new calls.
     /// If a record cannot be reserved, fail startup rather than silently reuse it.
     pub async fn restore_playback_ssrcs(&mut self) -> Result<usize> {
