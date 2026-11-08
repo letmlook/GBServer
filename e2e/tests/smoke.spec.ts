@@ -65,7 +65,7 @@ const LOGIN_USERNAME_PLACEHOLDER = '用户名 / SIP 编号';
 const LOGIN_PASSWORD_PLACEHOLDER = '登录密码';
 const LOGIN_BUTTON_TEXT = '登 录';
 
-const ADMIN = { username: 'admin', password: 'admin' };
+const ADMIN = { username: process.env.E2E_USERNAME ?? 'admin', password: process.env.E2E_PASSWORD ?? 'admin' };
 const AUTH_FILE = path.resolve(__dirname, '../artifacts/.auth.json');
 
 test.describe.configure({ mode: 'serial' });
@@ -104,7 +104,13 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
     await page.goto('/login');
     await page.locator(`input[placeholder="${LOGIN_USERNAME_PLACEHOLDER}"]`).fill(ADMIN.username);
     await page.locator(`input[placeholder="${LOGIN_PASSWORD_PLACEHOLDER}"]`).fill(ADMIN.password);
+    const loginResponse = page.waitForResponse((response) =>
+      response.url().includes('/user/login') && response.request().method() === 'POST');
     await page.getByRole('button', { name: LOGIN_BUTTON_TEXT }).click();
+    const login = await loginResponse;
+    expect(login.ok(), 'login HTTP response').toBeTruthy();
+    expect((await login.json()).code, 'login business response').toBe(0);
+    await expect.poll(async () => (await context.cookies()).some((cookie) => cookie.name === 'gbserver_token' && cookie.value.length > 0)).toBeTruthy();
 
     await page.waitForURL(/\/(dashboard)?$/, { timeout: 15_000 });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
