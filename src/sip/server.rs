@@ -534,6 +534,68 @@ impl Drop for PendingDropGuard<'_> {
     }
 }
 
+/// Cleanup owned SIP state if the cascade INVITE future is dropped mid-flight.
+struct CascadeInviteGuard {
+    call_id: String,
+    sessions: Arc<SessionManager>,
+    invites: Arc<InviteSessionManager>,
+    pending: Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
+    socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
+    config: Arc<SipConfig>,
+    armed: bool,
+}
+
+impl Drop for CascadeInviteGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let call_id = self.call_id.clone();
+        let sessions = self.sessions.clone();
+        let invites = self.invites.clone();
+        let pending = self.pending.clone();
+        let socket = self.socket.clone();
+        let config = self.config.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Some(ctx) = sessions.get(&call_id).await {
+                    if ctx.via_header.is_some() {
+                        sessions.remember_rejected(ctx).await;
+                    }
+                }
+                pending.remove(&call_id);
+                if let Some(invite) = invites.get(&call_id).await {
+                    if invite.status == InviteSessionStatus::Active {
+                        if let (Some(tag), Some(socket)) =
+                            (invite.remote_tag.as_deref(), socket.read().await.clone())
+                        {
+                            let mut response = SipResponse::new(200);
+                            response.headers.insert("call-id".into(), call_id.clone());
+                            response
+                                .headers
+                                .insert("cseq".into(), cseq_header(invite.invite_cseq, "INVITE"));
+                            response.headers.insert(
+                                "to".into(),
+                                format!(
+                                    "<sip:{}@{}:{}>;tag={}",
+                                    invite.channel_id,
+                                    invite.peer_addr.ip(),
+                                    invite.peer_addr.port(),
+                                    tag
+                                ),
+                            );
+                            handle_abandoned_invite_200(&response, &sessions, &socket, &config)
+                                .await;
+                        }
+                    }
+                }
+                sessions.remove(&call_id).await;
+                invites.remove(&call_id).await;
+            });
+        }
+    }
+}
+
 async fn handle_abandoned_invite_200(
     resp: &SipResponse,
     sessions: &SessionManager,
@@ -8089,6 +8151,15 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", channel_id, server_ip, server_port);
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
+        let mut cleanup = CascadeInviteGuard {
+            call_id: call_id.clone(),
+            sessions: self.session_manager.clone(),
+            invites: self.invite_session_manager.clone(),
+            pending: self.pending_invites.clone(),
+            socket: self.socket.clone(),
+            config: self.config.clone(),
+            armed: true,
+        };
         self.session_manager
             .create(&call_id, platform_gb_id, channel_id, "Play")
             .await;
@@ -8138,8 +8209,10 @@ f=v/1/96/1/2/1/1/0
             self.pending_invites.remove(&call_id);
             self.session_manager.remove(&call_id).await;
             self.invite_session_manager.remove(&call_id).await;
+            cleanup.armed = false;
             return Err(error);
         }
+        cleanup.armed = false;
         tracing::info!(
             "Platform accepted INVITE for channel {} to platform {} at {}",
             channel_id,
@@ -9221,6 +9294,128 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_cascade_after_answer_sends_bye() {
+        let state = crate::test_support::app_state().await;
+        let server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        *server.socket.write().await =
+            Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        let peer = remote.local_addr().unwrap();
+        let call_id = "plat_cancel_answered";
+        server
+            .session_manager
+            .create(call_id, "platform", "channel", "Play")
+            .await;
+        server
+            .session_manager
+            .set_invite_context(call_id, "<sip:local>;tag=local".into(), 1, peer)
+            .await;
+        server
+            .session_manager
+            .set_invite_via(
+                call_id,
+                "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest;rport",
+            )
+            .await;
+        let mut session =
+            InviteSession::new(call_id, "platform", "channel", StreamType::Play, peer);
+        session.status = InviteSessionStatus::Active;
+        session.set_remote_tag("remote");
+        server.invite_session_manager.create(session).await;
+        let guard = CascadeInviteGuard {
+            call_id: call_id.into(),
+            sessions: server.session_manager.clone(),
+            invites: server.invite_session_manager.clone(),
+            pending: server.pending_invites.clone(),
+            socket: server.socket.clone(),
+            config: server.config.clone(),
+            armed: true,
+        };
+        drop(guard);
+        let mut buf = [0u8; 4096];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .expect("ACK missing")
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("ACK "));
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .expect("BYE missing")
+            .unwrap();
+        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("BYE "));
+    }
+
+    #[tokio::test]
+    async fn cancelled_cascade_invite_releases_session_and_preserves_late_context() {
+        let state = crate::test_support::app_state().await;
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let crate::db::Pool::Sqlite(pool) = &state.pool else {
+            panic!("test requires sqlite")
+        };
+        sqlx::query(
+            "INSERT INTO gb_platform (server_gb_id, server_ip, server_port) VALUES (?, ?, ?)",
+        )
+        .bind("cancel-test")
+        .bind("127.0.0.1")
+        .bind(i64::from(remote.local_addr().unwrap().port()))
+        .execute(pool)
+        .await
+        .unwrap();
+        let server = Arc::new(SipServer::new(
+            SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        *server.socket.write().await =
+            Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        let worker = server.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .send_platform_invite_with_timeout(
+                    "cancel-test",
+                    "channel",
+                    30001,
+                    Duration::from_secs(30),
+                )
+                .await
+        });
+        let mut buf = [0u8; 4096];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), remote.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let packet = std::str::from_utf8(&buf[..n]).unwrap();
+        let call_id = packet
+            .lines()
+            .find_map(|line| line.strip_prefix("Call-ID: "))
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(server.ssrc_manager().active_count(), 1);
+        task.abort();
+        let _ = task.await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if server.ssrc_manager().active_count() == 0
+                    && server.pending_invites.is_empty()
+                    && server.invite_session_manager.total_count().await == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled INVITE leaked state");
+        assert!(server
+            .session_manager
+            .rejected_context(&call_id)
+            .await
+            .is_some());
+        assert!(server.session_manager.get(&call_id).await.is_none());
+    }
 
     #[tokio::test]
     async fn cascade_response_after_waiter_closes_is_acked_and_terminated() {
