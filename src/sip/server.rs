@@ -340,6 +340,10 @@ pub(crate) fn build_playback_ssrc(device_id: &str) -> String {
     build_ssrc(1, device_id)
 }
 
+fn new_playback_call_id(device_id: &str) -> String {
+    format!("playback_{}_{}", device_id, uuid::Uuid::new_v4().simple())
+}
+
 /// 下载 SSRC（前缀 2）。
 pub(crate) fn build_download_ssrc(device_id: &str) -> String {
     build_ssrc(2, device_id)
@@ -7387,11 +7391,7 @@ f=v/1/96/1/2/1/1/0
             .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
 
-        let call_id = format!(
-            "playback_{}_{}",
-            device_id,
-            chrono::Utc::now().timestamp_millis()
-        );
+        let call_id = new_playback_call_id(device_id);
         let branch = generate_branch();
         let cseq = cseq_header(1, "INVITE");
         let from_tag = generate_tag();
@@ -7510,11 +7510,7 @@ f=v/1/96/1/2/1/1/0
         media_port: u16,
         timeout_secs: u64,
     ) -> Result<(String, String)> {
-        let call_id = format!(
-            "playback_{}_{}",
-            device_id,
-            chrono::Utc::now().timestamp_millis()
-        );
+        let call_id = new_playback_call_id(device_id);
 
         let device_addr = self
             .device_manager
@@ -9020,6 +9016,26 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[test]
+    fn playback_call_ids_are_unique_for_concurrent_requests() {
+        let ids: std::collections::HashSet<_> = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..1250)
+                            .map(|_| new_playback_call_id("device"))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flat_map(|thread| thread.join().unwrap())
+                .collect()
+        });
+        assert_eq!(ids.len(), 10000);
+        assert!(ids.iter().all(|id| id.starts_with("playback_device_")));
+    }
 
     #[tokio::test]
     async fn playback_control_selects_only_matching_active_dialog() {

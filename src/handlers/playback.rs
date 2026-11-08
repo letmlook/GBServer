@@ -30,9 +30,40 @@ pub struct PlaybackSession {
     pub source: String,
 }
 
+fn new_playback_stream_id(device_id: &str, channel_id: &str) -> String {
+    format!(
+        "playback_{}_{}_{}",
+        device_id,
+        channel_id,
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
 #[cfg(test)]
 mod command_state_tests {
     use super::*;
+
+    #[test]
+    fn playback_stream_ids_are_unique_for_concurrent_requests() {
+        let ids: std::collections::HashSet<_> = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..1250)
+                            .map(|_| new_playback_stream_id("device", "channel"))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flat_map(|thread| thread.join().unwrap())
+                .collect()
+        });
+        assert_eq!(ids.len(), 10000);
+        assert!(ids
+            .iter()
+            .all(|id| id.starts_with("playback_device_channel_")));
+    }
     use crate::handlers::common_channel::{
         channel_playback_pause, channel_playback_resume, channel_playback_seek,
         channel_playback_speed, ChannelPlaybackPauseQ, ChannelPlaybackResumeQ,
@@ -443,12 +474,7 @@ pub async fn playback_start(
         start_time
     );
 
-    let stream_id = format!(
-        "playback_{}_{}_{}",
-        device_id,
-        channel_id,
-        chrono::Utc::now().timestamp()
-    );
+    let stream_id = new_playback_stream_id(&device_id, &channel_id);
     // openRtpServer 注册的真实 ZLM 应用名是 rtp；回放业务类型由 stream_id 区分。
     let app = "rtp".to_string();
     let media_server_id = state.list_zlm_servers().into_iter().next();

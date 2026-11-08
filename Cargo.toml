@@ -55,6 +55,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 anyhow = "1"
 rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
 dashmap = "5"
 
 # SIP/GB28181
@@ -86,7 +87,6 @@ assert_matches = "1.5"
 pretty_assertions = "1.4"
 fake = "2.6"
 criterion = { version = "0.5", features = ["async_tokio"] }
-uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
 name = "gbserver"
