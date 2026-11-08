@@ -55,7 +55,7 @@ impl SsrcManager {
             let seq = (start + offset) % 10000;
             let ssrc = format!("{}{}{:04}", type_digit, self.domain_part, seq);
             if ssrc.parse::<u32>().is_err() {
-                return None;
+                continue;
             }
             if let dashmap::mapref::entry::Entry::Vacant(entry) =
                 self.allocations.entry(ssrc.clone())
@@ -158,6 +158,15 @@ mod tests {
     fn allocation_rejects_ssrc_outside_rtp_u32_range() {
         let manager = SsrcManager::new("1239999900");
         assert!(manager.try_allocate("device", "channel", "talk").is_none());
+    }
+
+    #[test]
+    fn allocation_scans_past_out_of_range_slots_to_find_valid_slot() {
+        let manager = SsrcManager::new("1232949600");
+        manager.counter.store(7296, Ordering::Relaxed);
+        let ssrc = manager.try_allocate("device", "channel", "talk").unwrap();
+        assert_eq!(ssrc, "4294960000");
+        assert_eq!(ssrc.parse::<u32>().unwrap(), 4_294_960_000);
     }
 
     #[test]
