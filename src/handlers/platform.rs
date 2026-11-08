@@ -169,6 +169,29 @@ async fn sync_platform_registration(
     }
 }
 
+struct CascadeRtpLease {
+    zlm: crate::zlm::ZlmClient,
+    stream_id: String,
+    armed: bool,
+}
+
+impl Drop for CascadeRtpLease {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let zlm = self.zlm.clone();
+        let stream_id = self.stream_id.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = zlm.close_rtp_server(&stream_id).await {
+                    tracing::warn!(%stream_id, "取消级联启动后关闭 RTP 失败: {}", error);
+                }
+            });
+        }
+    }
+}
+
 async fn start_cascade_stream(
     sip: &crate::sip::SipServer,
     zlm: &crate::zlm::ZlmClient,
@@ -176,16 +199,32 @@ async fn start_cascade_stream(
     channel_id: &str,
 ) -> anyhow::Result<()> {
     let stream_id = format!("cascade_{}_{}", platform_id, channel_id);
-    let info = zlm
-        .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-            secret: zlm.secret.clone(),
-            stream_id: stream_id.clone(),
-            port: Some(0),
-            use_tcp: Some(false),
-            rtp_type: Some(0),
-            recv_port: None,
-        })
-        .await?;
+    // The spawned request outlives cancellation of this future. Its result owns
+    // the allocation, so dropping either the JoinHandle output or our local
+    // lease schedules cleanup even if cancellation races with the response.
+    let client = zlm.clone();
+    let open_stream = stream_id.clone();
+    let (info, mut lease) = tokio::spawn(async move {
+        let info = client
+            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                secret: client.secret.clone(),
+                stream_id: open_stream.clone(),
+                port: Some(0),
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            })
+            .await?;
+        Ok::<_, anyhow::Error>((
+            info,
+            CascadeRtpLease {
+                zlm: client,
+                stream_id: open_stream,
+                armed: true,
+            },
+        ))
+    })
+    .await??;
     if let Err(error) = sip
         .send_platform_invite(platform_id, channel_id, info.port)
         .await
@@ -198,8 +237,10 @@ async fn start_cascade_stream(
                 cleanup_error
             ));
         }
+        lease.armed = false;
         return Err(error);
     }
+    lease.armed = false;
     Ok(())
 }
 
@@ -2281,6 +2322,137 @@ pub async fn platform_info(
 mod platform_contract_tests {
     use super::*;
     use crate::test_support::app_state;
+
+    #[tokio::test]
+    async fn cancelled_after_rtp_open_closes_allocation() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let opened = Arc::new(tokio::sync::Notify::new());
+        let closed = Arc::new(AtomicUsize::new(0));
+        let (signal, count) = (opened.clone(), closed.clone());
+        let app = axum::Router::new()
+            .route(
+                "/index/api/openRtpServer",
+                axum::routing::get(move || {
+                    let signal = signal.clone();
+                    async move {
+                        signal.notify_one();
+                        axum::Json(serde_json::json!({"code":0,"port":30001}))
+                    }
+                }),
+            )
+            .route(
+                "/index/api/closeRtpServer",
+                axum::routing::get(move || {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"code":0,"hit":1}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let http_task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let state = app_state().await;
+        let crate::db::Pool::Sqlite(pool) = &state.pool else {
+            panic!("test requires sqlite")
+        };
+        let connection = pool.acquire().await.unwrap();
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let zlm = Arc::new(crate::zlm::ZlmClient::new("127.0.0.1", addr.port(), "test"));
+        let request =
+            tokio::spawn(
+                async move { start_cascade_stream(&sip, &zlm, "platform", "channel").await },
+            );
+        tokio::time::timeout(std::time::Duration::from_secs(2), opened.notified())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !request.is_finished(),
+            "SIP database lookup must still be waiting"
+        );
+        request.abort();
+        let _ = request.await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while closed.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("allocated RTP server leaked");
+        drop(connection);
+        http_task.abort();
+    }
+
+    #[tokio::test]
+    async fn cancelled_during_rtp_open_closes_eventual_allocation() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let started = Arc::new(tokio::sync::Notify::new());
+        let proceed = Arc::new(tokio::sync::Notify::new());
+        let closed = Arc::new(AtomicUsize::new(0));
+        let (s, p, c) = (started.clone(), proceed.clone(), closed.clone());
+        let app = axum::Router::new()
+            .route(
+                "/index/api/openRtpServer",
+                axum::routing::get(move || {
+                    let (s, p) = (s.clone(), p.clone());
+                    async move {
+                        s.notify_one();
+                        p.notified().await;
+                        axum::Json(serde_json::json!({"code":0,"port":30001}))
+                    }
+                }),
+            )
+            .route(
+                "/index/api/closeRtpServer",
+                axum::routing::get(move || {
+                    let c = c.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"code":0,"hit":1}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let http_task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let state = app_state().await;
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let zlm = Arc::new(crate::zlm::ZlmClient::new("127.0.0.1", addr.port(), "test"));
+        let request =
+            tokio::spawn(
+                async move { start_cascade_stream(&sip, &zlm, "platform", "channel").await },
+            );
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        request.abort();
+        let _ = request.await;
+        proceed.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while closed.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("allocated RTP server leaked");
+        http_task.abort();
+    }
 
     #[tokio::test]
     async fn failed_cascade_invite_closes_allocated_rtp_server() {
