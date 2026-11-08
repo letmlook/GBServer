@@ -123,7 +123,50 @@ mod command_state_tests {
         invite.status = InviteSessionStatus::Active;
         invite.set_local_dialog("local", 1);
         invite.set_remote_tag("remote");
-        sip.invite_session_manager().create(invite).await;
+        invite.set_zlm_stream(&stream, "rtp");
+        let lease = sip.test_playback_lease("device", "channel").unwrap();
+        invite.ssrc = Some(lease.ssrc().to_string());
+        sip.invite_session_manager()
+            .create_owned(invite, lease)
+            .await;
+        assert!(sip.retain_playback_ssrc("recover-call", &stream, "1200000001"));
+        let saved = crate::db::playback_recovery::RecoveryRecord {
+            stream_id: stream.clone(),
+            call_id: "recover-call".into(),
+            device_id: "device".into(),
+            channel_id: "channel".into(),
+            ssrc: "1200000001".into(),
+            peer_addr: peer.local_addr().unwrap().to_string(),
+            transport: "unknown".into(),
+            local_tag: Some("local".into()),
+            remote_tag: Some("remote".into()),
+            media_server_id: "zlm".into(),
+            app: "rtp".into(),
+            state: "cleanup_pending".into(),
+            last_cseq: 100,
+        };
+        crate::db::playback_recovery::insert(&state.pool, &saved)
+            .await
+            .unwrap();
+        sip.send_playback_control_for_session(
+            "device",
+            "channel",
+            Some("recover-call"),
+            crate::sip::server::PlaybackControlCmd::Pause,
+        )
+        .await
+        .unwrap();
+        let mut info_buf = [0u8; 2048];
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            peer.recv_from(&mut info_buf),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(std::str::from_utf8(&info_buf[..n])
+            .unwrap()
+            .contains("CSeq: 101 INFO"));
         state.sip_server = Some(sip);
         let mut record = manager.get(&stream).await.unwrap();
         record.call_id = Some("recover-call".into());
@@ -147,7 +190,7 @@ mod command_state_tests {
             .unwrap();
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("access-token", token.parse().unwrap());
-        let response = playback_recovery_retry(State(state), headers, Path(stream.clone()))
+        let response = playback_recovery_retry(State(state.clone()), headers, Path(stream.clone()))
             .await
             .unwrap()
             .0;
@@ -162,9 +205,65 @@ mod command_state_tests {
                 .await
                 .unwrap()
                 .unwrap();
-        assert!(std::str::from_utf8(&buf[..n]).unwrap().starts_with("BYE "));
+        let message = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(message.starts_with("BYE "));
+        assert!(message.contains("CSeq: 102 BYE"), "{message}");
+        assert_eq!(
+            crate::db::playback_recovery::get(&state.pool, &stream)
+                .await
+                .unwrap()
+                .unwrap()
+                .last_cseq,
+            102
+        );
         assert!(manager.get(&stream).await.is_none());
         http.abort();
+    }
+
+    #[tokio::test]
+    async fn retained_dialog_does_not_send_when_journal_is_unavailable() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        let (state, _, stream) = state_with_session().await;
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sip = crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        );
+        sip.set_test_udp_socket(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap())
+            .await;
+        let lease = sip.test_playback_lease("device", "channel").unwrap();
+        let mut invite = InviteSession::new(
+            "unavailable-call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            peer.local_addr().unwrap(),
+        );
+        invite.status = InviteSessionStatus::Active;
+        invite.set_local_dialog("local", 1);
+        invite.set_remote_tag("remote");
+        invite.set_zlm_stream(&stream, "rtp");
+        invite.ssrc = Some(lease.ssrc().to_owned());
+        sip.invite_session_manager()
+            .create_owned(invite, lease)
+            .await;
+        assert!(sip.retain_playback_ssrc("unavailable-call", &stream, "1200000001"));
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("DROP TABLE gb_playback_recovery").execute(p)
+        })
+        .unwrap();
+        assert!(sip
+            .send_session_bye_by_call_id("unavailable-call")
+            .await
+            .is_err());
+        let mut buf = [0u8; 2048];
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            peer.recv_from(&mut buf)
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]

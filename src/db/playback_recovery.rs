@@ -95,11 +95,25 @@ pub async fn mark_cleanup_pending(pool: &Pool, stream_id: &str) -> sqlx::Result<
 
 /// CAS reservation is committed by the database before the caller can send a request.
 pub async fn reserve_cseq(pool: &Pool, stream_id: &str) -> sqlx::Result<Option<i64>> {
+    reserve_cseq_at_least(pool, stream_id, None, 1).await
+}
+
+pub async fn reserve_cseq_at_least(
+    pool: &Pool,
+    stream_id: &str,
+    expected_call_id: Option<&str>,
+    minimum: i64,
+) -> sqlx::Result<Option<i64>> {
+    if !(1..=2_147_483_647).contains(&minimum) {
+        return Ok(None);
+    }
     loop {
         let Some(record) = get(pool, stream_id).await? else {
             return Ok(None);
         };
-        if !(0..2_147_483_647).contains(&record.last_cseq) {
+        if !(0..2_147_483_647).contains(&record.last_cseq)
+            || expected_call_id.is_some_and(|id| id != record.call_id)
+        {
             return Ok(None);
         }
         if !matches!(record.state.as_str(), "active" | "cleanup_pending")
@@ -114,14 +128,15 @@ pub async fn reserve_cseq(pool: &Pool, stream_id: &str) -> sqlx::Result<Option<i
         {
             return Ok(None);
         }
-        let next = record.last_cseq + 1;
+        let next = (record.last_cseq + 1).max(minimum);
         // Repeat the eligibility checks in the CAS: a state change or dialog
         // invalidation can occur after the preceding read.
-        let sql = pool.sql("UPDATE gb_playback_recovery SET last_cseq = ? WHERE stream_id = ? AND last_cseq = ? AND state IN ('active', 'cleanup_pending') AND local_tag IS NOT NULL AND LENGTH(local_tag) > 0 AND remote_tag IS NOT NULL AND LENGTH(remote_tag) > 0");
+        let sql = pool.sql("UPDATE gb_playback_recovery SET last_cseq = ? WHERE stream_id = ? AND call_id = ? AND last_cseq = ? AND state IN ('active', 'cleanup_pending') AND local_tag IS NOT NULL AND LENGTH(local_tag) > 0 AND remote_tag IS NOT NULL AND LENGTH(remote_tag) > 0");
         let result = crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql)
                 .bind(next)
                 .bind(stream_id)
+                .bind(&record.call_id)
                 .bind(record.last_cseq)
                 .execute(p)
         })?;

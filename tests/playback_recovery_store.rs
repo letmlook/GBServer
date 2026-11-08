@@ -59,6 +59,24 @@ async fn exercise(pool: Pool) {
         9
     );
     assert_eq!(journal::reserve_cseq(&pool, "missing").await.unwrap(), None);
+    assert_eq!(
+        journal::reserve_cseq_at_least(&pool, &record.stream_id, Some("wrong-call"), 20)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        journal::reserve_cseq_at_least(&pool, &record.stream_id, Some(&record.call_id), 20)
+            .await
+            .unwrap(),
+        Some(20)
+    );
+    assert_eq!(
+        journal::reserve_cseq(&pool, &record.stream_id)
+            .await
+            .unwrap(),
+        Some(21)
+    );
     journal::delete(&pool, &record.stream_id).await.unwrap();
     let mut exhausted = sample_record();
     exhausted.last_cseq = 2_147_483_647;

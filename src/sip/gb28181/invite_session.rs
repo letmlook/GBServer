@@ -451,6 +451,30 @@ impl InviteSessionManager {
         Some((snapshot, cseq))
     }
 
+    /// Apply a durable reservation only if this active dialog has not changed.
+    pub async fn advance_playback_cseq(
+        &self,
+        call_id: &str,
+        expected: u32,
+        reserved: u32,
+    ) -> Option<InviteSession> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions.get_mut(call_id)?;
+        if session.stream_type != StreamType::Playback
+            || session.status != InviteSessionStatus::Active
+            || session.invite_cseq != expected
+            || reserved < expected
+        {
+            return None;
+        }
+        session.invite_cseq = reserved;
+        session.update_activity();
+        let snapshot = session.clone();
+        drop(sessions);
+        self.sync_to_store(&snapshot);
+        Some(snapshot)
+    }
+
     pub async fn get_mut(
         &self,
         _call_id: &str,

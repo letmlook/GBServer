@@ -6727,6 +6727,56 @@ f=v/1/96/1/2/1/1/0
         self.send_invite_session_bye(session).await
     }
 
+    /// Caller holds playback_control_send_lock across reservation and send.
+    async fn reserve_durable_playback_cseq(
+        &self,
+        session: &InviteSession,
+    ) -> Result<(InviteSession, u32)> {
+        let (mut current, reserved) = self
+            .invite_session_manager
+            .reserve_playback_cseq(&session.call_id, &session.device_id, &session.channel_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("回放 SIP 对话已结束或 CSeq 已耗尽"))?;
+        let Some(stream_id) = current.zlm_stream_id.as_deref() else {
+            return Ok((current, reserved));
+        };
+        let retained = self
+            .restored_playback_ssrcs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(stream_id);
+        if !retained {
+            return Ok((current, reserved));
+        }
+        let record = crate::db::playback_recovery::get(&self.pool, stream_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("待恢复回放日志不可用，不能发送 SIP 命令"))?;
+        if record.call_id != current.call_id
+            || record.device_id != current.device_id
+            || record.channel_id != current.channel_id
+            || record.local_tag != current.local_tag
+            || record.remote_tag != current.remote_tag
+            || current.ssrc.as_deref() != Some(record.ssrc.as_str())
+        {
+            return Err(anyhow::anyhow!("待恢复回放日志与 SIP 对话不匹配"));
+        }
+        let persisted = crate::db::playback_recovery::reserve_cseq_at_least(
+            &self.pool,
+            stream_id,
+            Some(&current.call_id),
+            i64::from(reserved),
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("待恢复回放日志状态无效或 CSeq 已耗尽"))?;
+        let persisted = u32::try_from(persisted)?;
+        current = self
+            .invite_session_manager
+            .advance_playback_cseq(&current.call_id, reserved, persisted)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("回放 SIP 对话在预留序号期间发生变化"))?;
+        Ok((current, persisted))
+    }
+
     async fn send_invite_session_bye(
         &self,
         session: crate::sip::gb28181::invite_session::InviteSession,
@@ -6737,11 +6787,7 @@ f=v/1/96/1/2/1/1/0
             None
         };
         let session = if session.stream_type == StreamType::Playback {
-            self.invite_session_manager
-                .reserve_playback_cseq(&session.call_id, &session.device_id, &session.channel_id)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("没有可停止的活动回放 SIP 对话"))?
-                .0
+            self.reserve_durable_playback_cseq(&session).await?.0
         } else {
             session
         };
@@ -6869,11 +6915,7 @@ f=v/1/96/1/2/1/1/0
         let session =
             select_playback_dialog(&self.invite_session_manager, device_id, channel_id, call_id)
                 .await?;
-        let (session, cseq_num) = self
-            .invite_session_manager
-            .reserve_playback_cseq(&session.call_id, device_id, channel_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("回放 SIP 对话已结束或 CSeq 已耗尽"))?;
+        let (session, cseq_num) = self.reserve_durable_playback_cseq(&session).await?;
         let body = build_playback_control_mansrtsp(&cmd, cseq_num)?;
         let call_id = session.call_id.clone();
         let from_tag = session.local_tag.as_deref().ok_or_else(|| {
