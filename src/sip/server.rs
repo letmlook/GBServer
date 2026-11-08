@@ -5414,6 +5414,18 @@ impl SipServer {
         crate::sip::transport::tcp::send_sip_out(socket, addr, message).await
     }
 
+    async fn send_request_to_with_route(
+        &self,
+        addr: SocketAddr,
+        message: &str,
+    ) -> Result<crate::sip::transport::tcp::SentSipRoute> {
+        let socket = self.socket.read().await;
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        crate::sip::transport::tcp::send_sip_out_with_route(socket, addr, message).await
+    }
+
     async fn send_response(
         socket: &Arc<UdpSocket>,
         addr: SocketAddr,
@@ -7962,11 +7974,11 @@ f=v/1/96/1/2/1/1/0
             self.invite_session_manager
                 .set_original_request_uri(&call_id, &uri)
                 .await;
-            match self.send_request_to(device_addr, &message).await {
-                Ok(sent_over_tcp) => {
-                    let transport = if sent_over_tcp { "tcp" } else { "udp" };
+            match self.send_request_to_with_route(device_addr, &message).await {
+                Ok(route) => {
+                    let transport = if route.over_tcp { "tcp" } else { "udp" };
                     self.invite_session_manager
-                        .set_signaling_transport(&call_id, transport)
+                        .set_signaling_route(&call_id, transport, route.peer)
                         .await;
                 }
                 Err(error) => {
@@ -9511,7 +9523,9 @@ mod dialog_tag_tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let session = server.invite_session_manager.get(&call_id).await.unwrap();
-                if session.signaling_transport.as_deref() == Some("tcp") {
+                if session.signaling_transport.as_deref() == Some("tcp")
+                    && session.actual_signaling_peer == Some(address)
+                {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -9649,7 +9663,9 @@ mod dialog_tag_tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let current = server.invite_session_manager.get(&call_id).await.unwrap();
-                if current.signaling_transport.as_deref() == Some("udp") {
+                if current.signaling_transport.as_deref() == Some("udp")
+                    && current.actual_signaling_peer == Some(remote.local_addr().unwrap())
+                {
                     break;
                 }
                 tokio::task::yield_now().await;

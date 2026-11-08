@@ -309,6 +309,20 @@ pub async fn send_sip_out(
     addr: std::net::SocketAddr,
     message: &str,
 ) -> anyhow::Result<bool> {
+    Ok(send_sip_out_with_route(udp, addr, message).await?.over_tcp)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentSipRoute {
+    pub over_tcp: bool,
+    pub peer: SocketAddr,
+}
+
+pub async fn send_sip_out_with_route(
+    udp: &tokio::net::UdpSocket,
+    addr: std::net::SocketAddr,
+    message: &str,
+) -> anyhow::Result<SentSipRoute> {
     // 精确地址命中优先
     let exact = {
         let routes = tcp_response_routes();
@@ -318,7 +332,10 @@ pub async fn send_sip_out(
         match mgr.send_to(&addr, message).await {
             Ok(true) => {
                 tracing::debug!("SIP request sent over TCP to {}", addr);
-                return Ok(true);
+                return Ok(SentSipRoute {
+                    over_tcp: true,
+                    peer: addr,
+                });
             }
             Ok(false) => {
                 tracing::debug!("TCP 连接 {} 已不存在，回落发送（目标 {}）", addr, addr);
@@ -362,7 +379,10 @@ pub async fn send_sip_out(
         match mgr.send_to(&tcp_addr, message).await {
             Ok(true) => {
                 tracing::debug!("SIP request sent over TCP to {} (按 IP 匹配)", tcp_addr);
-                return Ok(true);
+                return Ok(SentSipRoute {
+                    over_tcp: true,
+                    peer: tcp_addr,
+                });
             }
             Ok(false) => {
                 tcp_response_routes().remove(&tcp_addr);
@@ -375,7 +395,10 @@ pub async fn send_sip_out(
     }
 
     udp.send_to(message.as_bytes(), addr).await?;
-    Ok(false)
+    Ok(SentSipRoute {
+        over_tcp: false,
+        peer: addr,
+    })
 }
 
 #[cfg(test)]
@@ -440,7 +463,9 @@ mod outbound_transport_tests {
 
         // 精确地址未命中时按 IP 兜底：换一个端口仍应命中同 IP 的连接
         let alt_addr: SocketAddr = format!("127.0.0.1:1").parse().unwrap();
-        assert!(send_sip_out(&udp, alt_addr, msg).await.unwrap());
+        let route = send_sip_out_with_route(&udp, alt_addr, msg).await.unwrap();
+        assert!(route.over_tcp);
+        assert_eq!(route.peer, listen_addr);
 
         tcp_response_routes().remove(&listen_addr);
         let _ = udp_peer_addr;
@@ -455,8 +480,9 @@ mod outbound_transport_tests {
         let peer_addr = peer.local_addr().unwrap();
 
         let msg = "MESSAGE sip:dev@127.0.0.1 SIP/2.0\r\nCall-ID: udp-test\r\n\r\n";
-        let over_tcp = send_sip_out(&udp, peer_addr, msg).await.unwrap();
-        assert!(!over_tcp, "无 TCP 连接时必须如实报告走了 UDP");
+        let route = send_sip_out_with_route(&udp, peer_addr, msg).await.unwrap();
+        assert!(!route.over_tcp, "无 TCP 连接时必须如实报告走了 UDP");
+        assert_eq!(route.peer, peer_addr);
 
         let mut buf = vec![0u8; msg.len()];
         let (n, _) = peer.recv_from(&mut buf).await.unwrap();

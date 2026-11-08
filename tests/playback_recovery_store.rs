@@ -33,6 +33,18 @@ async fn exercise(pool: Pool) {
     journal::insert_dialog_address(&pool, &address)
         .await
         .unwrap();
+    let route = journal::ObservedRoute {
+        stream_id: record.stream_id.clone(),
+        peer_addr: "192.0.2.10:15060".into(),
+        transport: "tcp".into(),
+    };
+    journal::insert_observed_route(&pool, &route).await.unwrap();
+    assert_eq!(
+        journal::get_observed_route(&pool, &record.stream_id)
+            .await
+            .unwrap(),
+        Some(route)
+    );
     assert_eq!(
         journal::get_dialog_address(&pool, &record.stream_id)
             .await
@@ -97,6 +109,10 @@ async fn exercise(pool: Pool) {
     );
     journal::delete(&pool, &record.stream_id).await.unwrap();
     assert!(journal::get_dialog_address(&pool, &record.stream_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(journal::get_observed_route(&pool, &record.stream_id)
         .await
         .unwrap()
         .is_none());
@@ -285,6 +301,12 @@ async fn sqlite_delete_rolls_back_address_when_record_delete_fails() {
     journal::insert_dialog_address(&pool, &address)
         .await
         .unwrap();
+    let route = journal::ObservedRoute {
+        stream_id: record.stream_id.clone(),
+        peer_addr: "192.0.2.10:15060".into(),
+        transport: "tcp".into(),
+    };
+    journal::insert_observed_route(&pool, &route).await.unwrap();
     sqlx::query("CREATE TRIGGER fail_record_delete BEFORE DELETE ON gb_playback_recovery BEGIN SELECT RAISE(ABORT, 'injected failure'); END").execute(&db).await.unwrap();
     assert!(journal::delete(&pool, &record.stream_id).await.is_err());
     assert_eq!(
@@ -297,6 +319,12 @@ async fn sqlite_delete_rolls_back_address_when_record_delete_fails() {
         .await
         .unwrap()
         .is_some());
+    assert_eq!(
+        journal::get_observed_route(&pool, &record.stream_id)
+            .await
+            .unwrap(),
+        Some(route)
+    );
 }
 
 #[tokio::test]

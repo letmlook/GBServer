@@ -170,6 +170,7 @@ pub struct InviteSession {
     pub peer_addr: SocketAddr,
     /// Actual transport selected for the outbound INVITE; None means unknown.
     pub signaling_transport: Option<String>,
+    pub actual_signaling_peer: Option<SocketAddr>,
     /// Raw To header from the INVITE 200 response; never reconstruct it from current configuration.
     pub original_to_header: Option<String>,
     pub original_request_uri: Option<String>,
@@ -232,6 +233,7 @@ impl InviteSession {
             last_activity: Utc::now(),
             peer_addr,
             signaling_transport: None,
+            actual_signaling_peer: None,
             original_to_header: None,
             original_request_uri: None,
             sdp_request: None,
@@ -601,12 +603,18 @@ impl InviteSessionManager {
         true
     }
 
-    pub async fn set_signaling_transport(&self, call_id: &str, transport: &str) -> bool {
+    pub async fn set_signaling_route(
+        &self,
+        call_id: &str,
+        transport: &str,
+        peer: SocketAddr,
+    ) -> bool {
         let mut guard = self.sessions.write().await;
         let Some(session) = guard.get_mut(call_id) else {
             return false;
         };
         session.signaling_transport = Some(transport.to_owned());
+        session.actual_signaling_peer = Some(peer);
         let snapshot = session.clone();
         drop(guard);
         self.sync_to_store(&snapshot);

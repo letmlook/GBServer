@@ -392,7 +392,8 @@ mod command_state_tests {
         session.set_local_dialog("local", 1);
         session.set_remote_tag("remote");
         let owned_ssrc = sip.test_playback_lease("device", "channel").unwrap();
-        session.signaling_transport = Some("udp".into());
+        session.signaling_transport = Some("tcp".into());
+        session.actual_signaling_peer = Some("192.0.2.10:15060".parse().unwrap());
         session.original_request_uri = Some("sip:channel@192.0.2.10:5060".into());
         session.original_to_header = Some("<sip:channel@192.0.2.10:5060>;tag=remote".into());
         sip.session_manager()
@@ -433,8 +434,14 @@ mod command_state_tests {
         assert_eq!(saved.ssrc, "1200000001");
         assert_eq!(saved.last_cseq, 4);
         assert_eq!(saved.state, "cleanup_pending");
-        assert_eq!(saved.transport, "udp");
+        assert_eq!(saved.transport, "tcp");
         assert_eq!(saved.remote_tag.as_deref(), Some("remote"));
+        let route = crate::db::playback_recovery::get_observed_route(&state.pool, &stream)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(route.peer_addr, "192.0.2.10:15060");
+        assert_eq!(route.transport, "tcp");
         let address = crate::db::playback_recovery::get_dialog_address(&state.pool, &stream)
             .await
             .unwrap()
@@ -979,18 +986,22 @@ impl Drop for PlaybackStartGuard {
                                     tracing::error!(%call_id, %stream_id, "无法保留回放 SSRC 的所有权，恢复记录仅保存在当前进程");
                                 } else if let Err(error) = crate::db::playback_recovery::insert(sip.database_pool(), &record).await {
                                     tracing::error!(%call_id, %stream_id, "持久化待清理回放失败，记录仅保存在当前进程: {}", error);
-                                } else if let (Some(from_header), Some(to_header), Some(request_uri)) = (
-                                    sip.session_manager().get(&call_id).await.and_then(|ctx| ctx.from_header),
-                                    dialog.original_to_header.clone(),
-                                    dialog.original_request_uri.clone(),
-                                ) {
-                                    let address = crate::db::playback_recovery::DialogAddress {
-                                        stream_id: stream_id.clone(),
-                                        request_uri,
-                                        from_header, to_header,
-                                    };
-                                    if let Err(error) = crate::db::playback_recovery::insert_dialog_address(sip.database_pool(), &address).await {
-                                        tracing::error!(%call_id, %stream_id, "持久化回放对话地址失败，暂不可恢复: {}", error);
+                                } else {
+                                    if let (Some(peer), Some(transport)) = (dialog.actual_signaling_peer, dialog.signaling_transport.as_ref()) {
+                                        let route = crate::db::playback_recovery::ObservedRoute { stream_id: stream_id.clone(), peer_addr: peer.to_string(), transport: transport.clone() };
+                                        if let Err(error) = crate::db::playback_recovery::insert_observed_route(sip.database_pool(), &route).await {
+                                            tracing::error!(%call_id, %stream_id, "持久化回放实际信令路由失败: {}", error);
+                                        }
+                                    }
+                                    if let (Some(from_header), Some(to_header), Some(request_uri)) = (
+                                        sip.session_manager().get(&call_id).await.and_then(|ctx| ctx.from_header),
+                                        dialog.original_to_header.clone(),
+                                        dialog.original_request_uri.clone(),
+                                    ) {
+                                        let address = crate::db::playback_recovery::DialogAddress { stream_id: stream_id.clone(), request_uri, from_header, to_header };
+                                        if let Err(error) = crate::db::playback_recovery::insert_dialog_address(sip.database_pool(), &address).await {
+                                            tracing::error!(%call_id, %stream_id, "持久化回放对话地址失败，暂不可恢复: {}", error);
+                                        }
                                     }
                                 }
                             } else {
