@@ -273,12 +273,28 @@ impl TcpConnectionManager {
     pub async fn send_to(&self, addr: &SocketAddr, data: &str) -> anyhow::Result<bool> {
         match self.get_connection(addr).await {
             Some(conn) => {
-                let mut stream = conn.lock().await;
-                stream.write_all(data.as_bytes()).await?;
-                stream.flush().await?;
+                let result = async {
+                    let mut stream = conn.lock().await;
+                    stream.write_all(data.as_bytes()).await?;
+                    stream.flush().await?;
+                    Ok::<(), std::io::Error>(())
+                }
+                .await;
+                if result.is_err() {
+                    self.remove_connection_if_current(addr, &conn).await;
+                }
+                result?;
                 Ok(true)
             }
-            None => Ok(false),
+            None => {
+                let guard = self.connections.read().await;
+                if !guard.contains_key(addr) {
+                    tcp_response_routes().remove_if(addr, |_, manager| {
+                        Arc::ptr_eq(&manager.connections, &self.connections)
+                    });
+                }
+                Ok(false)
+            }
         }
     }
 
@@ -364,11 +380,9 @@ pub async fn send_sip_out_with_route(
             }
             Ok(false) => {
                 tracing::debug!("TCP 连接 {} 已不存在，回落发送（目标 {}）", addr, addr);
-                tcp_response_routes().remove(&addr);
             }
             Err(e) => {
                 tracing::warn!("TCP 发送到 {} 失败，回落 UDP: {}", addr, e);
-                tcp_response_routes().remove(&addr);
             }
         }
     }
@@ -412,12 +426,9 @@ pub async fn send_sip_out_with_route(
                     peer: tcp_addr,
                 });
             }
-            Ok(false) => {
-                tcp_response_routes().remove(&tcp_addr);
-            }
+            Ok(false) => {}
             Err(e) => {
                 tracing::warn!("TCP 发送到 {} 失败，回落 UDP: {}", tcp_addr, e);
-                tcp_response_routes().remove(&tcp_addr);
             }
         }
     }
@@ -432,6 +443,40 @@ pub async fn send_sip_out_with_route(
 #[cfg(test)]
 mod outbound_transport_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_old_send_preserves_replacement_route() {
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first = TokioTcpStream::connect(addr).await.unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let manager = TcpConnectionManager::new();
+        let old = manager.add_connection(addr, first.into_split().1).await;
+        tcp_response_routes().insert(addr, manager.clone());
+        let mut old_write = old.lock().await;
+        old_write.shutdown().await.unwrap();
+        let udp = Arc::new(tokio::net::UdpSocket::bind("[::1]:0").await.unwrap());
+        let udp_for_task = udp.clone();
+        let sender =
+            tokio::spawn(async move { send_sip_out_with_route(&udp_for_task, addr, "old").await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while Arc::strong_count(&old) < 3 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let second = TokioTcpStream::connect(addr).await.unwrap();
+        let (_new_peer, _) = listener.accept().await.unwrap();
+        manager.add_connection(addr, second.into_split().1).await;
+        drop(old_write);
+        sender.await.unwrap().unwrap();
+        assert!(
+            tcp_response_routes().contains_key(&addr),
+            "old send must not delete the new route"
+        );
+        tcp_response_routes().remove(&addr);
+    }
 
     #[tokio::test]
     async fn old_connection_cleanup_preserves_replacement() {

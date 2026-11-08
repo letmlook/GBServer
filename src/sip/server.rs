@@ -5599,7 +5599,6 @@ impl SipServer {
                     Ok(true) => return Ok(()),
                     Ok(false) => {
                         // 连接已不在此管理器里（例如刚被清理），走 UDP
-                        routes.remove(&addr);
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -5607,7 +5606,6 @@ impl SipServer {
                             addr,
                             e
                         );
-                        routes.remove(&addr);
                     }
                 }
             }
