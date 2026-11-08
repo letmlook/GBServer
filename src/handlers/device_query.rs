@@ -284,8 +284,7 @@ pub async fn device_config_query(
 /// GET /api/play/ssrc/{device_id}/{channel_id}
 /// 获取播放的 SSRC 信息
 ///
-/// 由 SIP server 的 `SsrcManager` 分配 SSRC —— 同一 (deviceId, channelId, 流类型)
-/// 重复调用可能拿到不同的 SSRC（点播开始时新分配、结束释放）。
+/// 查询当前活动直播 SIP 会话的 SSRC；没有活动直播时返回业务错误。
 #[utoipa::path(
     get,
     path = "/api/play/ssrc/{device_id}/{channel_id}",
@@ -296,11 +295,11 @@ pub async fn device_config_query(
         ("channel_id" = String, Path, description = "通道国标 ID"),
     ),
     responses(
-        (status = 200, description = "分配到的 SSRC",
+        (status = 200, description = "活动直播的 SSRC，未播放时返回业务错误",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","channelId":"34020000001310000001",
-             "ssrc":"00000001"
+             "ssrc":"0200000001"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -311,13 +310,16 @@ pub async fn get_ssrc(
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     if let Some(ref sip_server) = state.sip_server {
-        let server = &*sip_server;
-        let ssrc_mgr = server.ssrc_manager();
-        let Some(ssrc) = ssrc_mgr.try_allocate(&device_id, &channel_id, "live") else {
-            return Json(ApiResult::<()>::error(
-                "无法分配 SSRC：编号已用尽或域标识无效",
-            ))
-            .into_response();
+        let session = sip_server
+            .invite_session_manager()
+            .get_active_session_by_type(
+                &device_id,
+                &channel_id,
+                crate::sip::gb28181::invite_session::StreamType::Play,
+            )
+            .await;
+        let Some(ssrc) = session.and_then(|s| s.ssrc) else {
+            return Json(ApiResult::<()>::error("没有可用的活动直播 SSRC")).into_response();
         };
         return Json(ApiResult::success(serde_json::json!({
             "deviceId": device_id,
@@ -1039,11 +1041,11 @@ pub async fn snap_path(
     operation_id = "device_query_ssrc_query",
     params(DeviceChannelQuery),
     responses(
-        (status = 200, description = "同 `get_ssrc`（SSRC 是新分配的还是复用已有，取决于 SsrcManager）",
+        (status = 200, description = "同 `get_ssrc`（返回当前活动直播的 SSRC）",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","channelId":"34020000001310000001",
-             "ssrc":"00000001"
+             "ssrc":"0200000001"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -1311,6 +1313,44 @@ pub fn parse_alarm_list(xml: &str) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod compat_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ssrc_query_reads_active_live_session_without_allocating() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        use axum::body::to_bytes;
+        let mut state = crate::test_support::app_state().await;
+        let sip = std::sync::Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        state.sip_server = Some(sip.clone());
+        let query = || get_ssrc(State(state.clone()), Path(("dev".into(), "ch".into())));
+        let response = query().await.into_response();
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_ne!(body["code"], 0);
+        assert_eq!(sip.ssrc_manager().active_count(), 0);
+        let mut session = InviteSession::new(
+            "call",
+            "dev",
+            "ch",
+            StreamType::Play,
+            "127.0.0.1:5060".parse().unwrap(),
+        );
+        session.status = InviteSessionStatus::Active;
+        session.ssrc = Some("0123456789".into());
+        sip.invite_session_manager().create(session).await;
+        for _ in 0..3 {
+            let response = query().await.into_response();
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["data"]["ssrc"], "0123456789");
+        }
+        assert_eq!(sip.ssrc_manager().active_count(), 0);
+    }
 
     /// 设备应答里的 AlarmList 必须逐条解析出来。
     #[test]

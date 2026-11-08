@@ -8,6 +8,7 @@ ZLM node. The script owns a local SIP Mock, requires ffmpeg, and cleans it up.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -75,12 +76,26 @@ def main():
                 channel = next(row["channelId"] for row in listing["data"]["list"]
                                if row["deviceId"] == DEVICE_ID)
 
+                ssrc_path = f"/api/play/ssrc/{DEVICE_ID}/{channel}"
+                assert api(ssrc_path, token=token)["code"] != 0, "SSRC query succeeded without live session"
+
                 started = api(f"/api/play/start/{DEVICE_ID}/{channel}", token=token, timeout=35)
                 if started.get("code") != 0:
                     raise AssertionError("play start failed: " + json.dumps(started, ensure_ascii=False))
+                output.flush()
+                output.seek(0)
+                log = output.read().decode(errors="replace")
+                match = re.search(r"INVITE 收到: Subject=\S+ s=Play y=(\d+)", log)
+                assert match, "live INVITE SSRC not found in mock log"
+                expected = match.group(1)
+                query = urllib.parse.urlencode({"deviceId": DEVICE_ID, "channelId": channel})
+                for path in [ssrc_path, "/api/play/ssrc?" + query, ssrc_path]:
+                    result = api(path, token=token)
+                    assert result.get("code") == 0 and result["data"]["ssrc"] == expected, result
                 stopped = api(f"/api/play/stop/{DEVICE_ID}/{channel}", token=token)
                 if stopped.get("code") != 0 or not (stopped.get("data") or {}).get("callId"):
                     raise AssertionError("play stop failed: " + json.dumps(stopped, ensure_ascii=False))
+                assert api(ssrc_path, token=token)["code"] != 0, "SSRC query succeeded after stop"
 
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
