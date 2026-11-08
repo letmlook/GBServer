@@ -450,6 +450,7 @@ const playerStatus = ref<'idle' | 'loading' | 'playing' | 'error'>('idle')
 const nativeRef = ref<HTMLVideoElement | null>(null)
 const flvRef = ref<HTMLVideoElement | null>(null)
 const playData = ref<PlayStartResult | null>(null)
+let activePlayTarget: { deviceId: string; channelId: string } | null = null
 let stopRequest: Promise<void> | null = null
 let closeStopWarningShown = false
 let closeCleanupRequested = false
@@ -616,7 +617,14 @@ async function onOpen() {
   const generation = ++openGeneration
   if (playbackTask) await playbackTask
   if (stopRequest) {
-    try { await stopRequest } catch { return }
+    try { await stopRequest } catch { /* 下面针对原会话重试 */ }
+  }
+  if (generation !== openGeneration || !props.modelValue || !props.channel) return
+  if (playData.value && activePlayTarget) {
+    try { await stopChannel() } catch {
+      playerStatus.value = 'error'
+      return
+    }
   }
   if (generation !== openGeneration || !props.modelValue || !props.channel) return
   if (pendingLateCleanup) {
@@ -700,6 +708,7 @@ async function playChannel() {
       })
       return
     }
+    activePlayTarget = { deviceId, channelId }
     playData.value = data
     await nextTick()
     // 默认按"低延迟优先"：WebRTC → HLS → HTTP-FLV → RTSP/RTMP 链式兜底
@@ -944,13 +953,14 @@ async function stopChannel() {
     v.removeAttribute('src')
     v.load()
   }
-  if (!props.channel || !playData.value) return
+  if (!activePlayTarget || !playData.value) return
   if (!stopRequest) {
-    const { deviceId, channelId } = props.channel
+    const { deviceId, channelId } = activePlayTarget
     stopRequest = stopPlay(deviceId, channelId)
       .then(() => {
         playerStatus.value = 'idle'
         playData.value = null
+        activePlayTarget = null
         currentProtocol.value = ''
         closeStopWarningShown = false
       })

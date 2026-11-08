@@ -252,3 +252,39 @@ test('迟到流停止失败时，重开先重试停止再起流', async ({ page 
   await row.getByRole('button', { name: '播放' }).click()
   await expect.poll(() => events.slice(0, 5)).toEqual(['start', 'stop', 'stop', 'stop', 'start'])
 })
+
+test('关闭活动流失败后切换通道，先重试停止原通道', async ({ page }) => {
+  const other = '34020000001310000992'
+  const events: string[] = []
+  await page.route('**/common/channel/list*', (route) => route.fulfill({ json: {
+    code: 0, msg: '成功', data: { total: 2, list: [
+      { id: 991, deviceId: DEVICE, channelId: CHANNEL, name: '原通道', status: 'ON' },
+      { id: 992, deviceId: DEVICE, channelId: other, name: '新通道', status: 'ON' }
+    ] }
+  } }))
+  await page.route(`**/play/start/${DEVICE}/*`, (route) => {
+    const channel = route.request().url().split('/').pop()!
+    events.push(`start:${channel}`)
+    return route.fulfill({ json: { code: 0, msg: '成功', data: {
+      app: 'rtp', stream: channel, playUrl: `rtsp://127.0.0.1:554/rtp/${channel}`
+    } } })
+  })
+  await page.route(`**/play/stop/${DEVICE}/*`, (route) => {
+    const channel = route.request().url().split('/').pop()!
+    events.push(`stop:${channel}`)
+    return route.fulfill({ json: events.filter((event) => event.startsWith('stop:')).length === 1
+      ? { code: 500, msg: '停止失败', data: null } : { code: 0, msg: '成功', data: null } })
+  })
+  await page.goto('/#/channel', { waitUntil: 'domcontentloaded' })
+  await page.getByRole('row', { name: /原通道/ }).getByRole('button', { name: '播放' }).click()
+  await expect.poll(() => events.length).toBe(1)
+  const dialog = page.getByRole('dialog', { name: /原通道/ })
+  await expect(dialog.locator('.protocol-switch')).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭此对话框' }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => events.length).toBe(2)
+  await page.getByRole('row', { name: /新通道/ }).getByRole('button', { name: '播放' }).click()
+  await expect.poll(() => events.slice(0, 4)).toEqual([
+    `start:${CHANNEL}`, `stop:${CHANNEL}`, `stop:${CHANNEL}`, `start:${other}`
+  ])
+})
