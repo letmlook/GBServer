@@ -4170,6 +4170,35 @@ impl SipServer {
             cseq
         );
 
+        // A non-2xx final INVITE response is acknowledged within the original
+        // transaction: preserve the INVITE's Via branch and request URI.
+        if (300..=699).contains(&resp.status_code()) && cseq.ends_with(" INVITE") {
+            if let Some(ctx) = session_manager.get(&call_id).await {
+                if let (Some(via), Some(from), Some(number), Some(peer), Some(to)) = (
+                    ctx.via_header.as_deref(),
+                    ctx.from_header.as_deref(),
+                    ctx.cseq_num,
+                    ctx.device_addr,
+                    resp.headers.get("to"),
+                ) {
+                    let uri = format!("sip:{}@{}:{}", ctx.channel_id, peer.ip(), peer.port());
+                    let ack = Parser::generate_ack(
+                        &uri,
+                        via,
+                        from,
+                        to,
+                        &call_id,
+                        &cseq_header(number, "ACK"),
+                    );
+                    if let Err(error) =
+                        crate::sip::transport::tcp::send_sip_out(socket, peer, &ack).await
+                    {
+                        tracing::warn!(%call_id, "发送 INVITE 拒绝 ACK 失败: {}", error);
+                    }
+                }
+            }
+        }
+
         // 延迟探针响应：结算一次 RTT 样本。
         // 放在最前面 —— `lat_` 前缀的 Call-ID 只属于延迟注册表，不参与
         // 下面的级联/事务/会话路由（下面各分支按 cseq 或 call_id 前缀匹配，
@@ -7971,6 +8000,7 @@ f=v/1/96/1/2/1/1/0
         self.session_manager
             .set_invite_context(&call_id, from.clone(), 1, addr)
             .await;
+        self.session_manager.set_invite_via(&call_id, &via).await;
         self.register_outbound_invite(
             &call_id,
             platform_gb_id,

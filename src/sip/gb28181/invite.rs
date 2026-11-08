@@ -20,6 +20,8 @@ pub struct InviteSession {
     /// INVITE 时的 From 头（带 server tag），用来发 ACK 时复用，
     /// 保证 ACK 和 INVITE 同一对话（tag 一致）。
     pub from_header: Option<String>,
+    /// Original INVITE Via, including transaction branch, for non-2xx ACK.
+    pub via_header: Option<String>,
     /// INVITE 时的 CSeq 数字（"INVITE N" 中的 N），ACK 用 "ACK N"。
     pub cseq_num: Option<u32>,
     /// 设备地址（IP:port），发 ACK 时直接用。
@@ -70,6 +72,7 @@ impl SessionManager {
             created_at: Utc::now(),
             status: SessionStatus::Inviting,
             from_header: None,
+            via_header: None,
             cseq_num: None,
             device_addr: None,
             ack_sent: false,
@@ -135,6 +138,12 @@ impl SessionManager {
             s.from_header = Some(from_header);
             s.cseq_num = Some(cseq_num);
             s.device_addr = Some(device_addr);
+        }
+    }
+
+    pub async fn set_invite_via(&self, call_id: &str, via: &str) {
+        if let Some(session) = self.sessions.write().await.get_mut(call_id) {
+            session.via_header = Some(via.to_string());
         }
     }
 

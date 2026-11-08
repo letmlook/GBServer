@@ -49,6 +49,12 @@ def main():
                         + f"Call-ID: {headers['call-id']}\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n")
             sock.sendto(response.encode(), addr)
             if reject:
+                ack, _ = sock.recvfrom(65535)
+                ack_text = ack.decode()
+                assert ack_text.startswith("ACK "), ack_text[:80]
+                assert f"Via: {headers['via']}" in ack_text, ack_text
+                assert f"To: {headers['to']};tag=peer123" in ack_text, ack_text
+                assert f"Call-ID: {headers['call-id']}" in ack_text and "CSeq: 1 ACK" in ack_text, ack_text
                 outcome.append((addr, headers))
                 return
             ack, _ = sock.recvfrom(65535)
