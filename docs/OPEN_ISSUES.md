@@ -1829,6 +1829,16 @@ dialect_guard` 编译失败（报告 467 个错误），因此流水线仍未通
 （`dyn_where.rs`、`stub.rs`、`lib.rs`、`record_plan.rs`），其中包含后续重构，
 需要逐项核对后处理，不能把这个结果直接等同于实际代码丢失。
 
+2026-11-08 静态核对这 4 项：`dyn_where.rs` 的方言改写、整数转换和日期表达式
+已迁至 `db/dialect.rs` 与 `Pool` 方法，相关测试也已迁移；`stub.rs` 的 `DDL`
+常量改为 `ensure_record_collect_table` 内按连接方言选择的 `ddl`；`lib.rs` 的
+`SCHEMA_SQL` 改为由 `schema_sql(pool.dialect())` 选择三个初始化文件；录像调度的
+`start_record_with_retry` 包装函数由 `record_channel` 调用既有的
+`start_record_with_retry_fn` 取代，生产调用仍传入 ZLM 的 `start_record`。
+本机定向测试 `cargo test --lib --locked dialect` 8/8、
+`cargo test --lib --locked start_record_retry` 4/4 通过。符号体检仍按名称保守报出
+这些差异；此核对不证明转换流水线可以复现当前代码，也不替代三方言运行验证。
+
 **⑥ 已知非缺陷（不算缺陷，但别当回归查）** —— 三方言冒烟各有 **5 项**失败，
 **失败项集合三方言完全一致**：CSV 导出不是 JSON（E1）、
 `proxy/start` / `push/start` / `push/stop` / `media_server/check` 全部是
