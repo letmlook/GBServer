@@ -1460,12 +1460,13 @@ impl SipServer {
                             // 写半交给连接管理器（供响应与平台主动请求使用），
                             // 读半留在读循环里 —— 两者不共用锁，避免
                             // "读阻塞"与"写响应"互相顶住。
-                            conn_manager.add_connection(addr, write_half).await;
+                            let connection = conn_manager.add_connection(addr, write_half).await;
 
                             tokio::spawn(async move {
                                 Self::handle_tcp_connection(
                                     addr,
                                     reader,
+                                    connection,
                                     &config,
                                     &device_manager,
                                     &session_manager,
@@ -1862,6 +1863,7 @@ impl SipServer {
     async fn handle_tcp_connection(
         addr: SocketAddr,
         mut reader: crate::sip::transport::tcp::TcpReader,
+        connection: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         session_manager: &Arc<SessionManager>,
@@ -1941,8 +1943,9 @@ impl SipServer {
                 }
             }
             device_manager.invalidate_ingress(addr, ingress).await;
-            conn_manager.remove_connection(&addr).await;
-            crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
+            conn_manager
+                .remove_connection_if_current(&addr, &connection)
+                .await;
         }
     }
 

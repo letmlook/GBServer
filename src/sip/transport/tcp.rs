@@ -215,7 +215,11 @@ impl TcpConnectionManager {
         }
     }
 
-    pub async fn add_connection(&self, addr: SocketAddr, stream: OwnedWriteHalf) {
+    pub async fn add_connection(
+        &self,
+        addr: SocketAddr,
+        stream: OwnedWriteHalf,
+    ) -> Arc<Mutex<OwnedWriteHalf>> {
         let mut guard = self.connections.write().await;
         // 同址重连：旧写半已被新连接取代
         guard.remove(&addr);
@@ -226,7 +230,28 @@ impl TcpConnectionManager {
                 addr
             );
         }
-        guard.insert(addr, Arc::new(Mutex::new(stream)));
+        let connection = Arc::new(Mutex::new(stream));
+        guard.insert(addr, connection.clone());
+        connection
+    }
+
+    pub async fn remove_connection_if_current(
+        &self,
+        addr: &SocketAddr,
+        connection: &Arc<Mutex<OwnedWriteHalf>>,
+    ) -> bool {
+        let mut guard = self.connections.write().await;
+        if !guard
+            .get(addr)
+            .is_some_and(|current| Arc::ptr_eq(current, connection))
+        {
+            return false;
+        }
+        guard.remove(addr);
+        tcp_response_routes().remove_if(addr, |_, manager| {
+            Arc::ptr_eq(&manager.connections, &self.connections)
+        });
+        true
     }
 
     pub async fn remove_connection(&self, addr: &SocketAddr) {
@@ -355,11 +380,14 @@ pub async fn send_sip_out_with_route(
     // 的连接上 —— 比回落到 UDP 更糟（错误地"成功"了）。因此只在
     // 该 IP 恰好只有一条连接时才兜底。
     let by_ip: Option<(TcpConnectionManager, SocketAddr)> = {
-        let routes = tcp_response_routes();
+        let routes: Vec<_> = tcp_response_routes()
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         let mut candidates: Vec<(TcpConnectionManager, SocketAddr)> = Vec::new();
-        for entry in routes.iter() {
-            if let Some(alt) = entry.value().find_by_ip(addr.ip()).await {
-                candidates.push((entry.value().clone(), alt));
+        for manager in routes {
+            if let Some(alt) = manager.find_by_ip(addr.ip()).await {
+                candidates.push((manager, alt));
             }
         }
         match candidates.len() {
@@ -404,6 +432,26 @@ pub async fn send_sip_out_with_route(
 #[cfg(test)]
 mod outbound_transport_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn old_connection_cleanup_preserves_replacement() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first = TokioTcpStream::connect(addr).await.unwrap();
+        let (_first_peer, _) = listener.accept().await.unwrap();
+        let second = TokioTcpStream::connect(addr).await.unwrap();
+        let (mut second_peer, _) = listener.accept().await.unwrap();
+        let manager = TcpConnectionManager::new();
+        manager.add_connection(addr, first.into_split().1).await;
+        let old = manager.get_connection(&addr).await.unwrap();
+        manager.add_connection(addr, second.into_split().1).await;
+        // Simulate the old connection's reader finishing after replacement.
+        assert!(!manager.remove_connection_if_current(&addr, &old).await);
+        assert!(manager.send_to(&addr, "new connection").await.unwrap());
+        let mut bytes = [0; 14];
+        second_peer.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"new connection");
+    }
 
     /// `tcp_response_routes()` 是进程级全局表，而这些用例都在 127.0.0.1 上
     /// 建连接 —— 并行执行会互相看到对方的连接（IP 兜底尤其明显）。
