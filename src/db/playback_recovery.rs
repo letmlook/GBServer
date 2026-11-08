@@ -70,10 +70,22 @@ pub async fn reserve_cseq(pool: &Pool, stream_id: &str) -> sqlx::Result<Option<i
         if !(0..2_147_483_647).contains(&record.last_cseq) {
             return Ok(None);
         }
+        if !matches!(record.state.as_str(), "active" | "cleanup_pending")
+            || !record
+                .local_tag
+                .as_deref()
+                .is_some_and(|tag| !tag.is_empty())
+            || !record
+                .remote_tag
+                .as_deref()
+                .is_some_and(|tag| !tag.is_empty())
+        {
+            return Ok(None);
+        }
         let next = record.last_cseq + 1;
-        let sql = pool.sql(
-            "UPDATE gb_playback_recovery SET last_cseq = ? WHERE stream_id = ? AND last_cseq = ?",
-        );
+        // Repeat the eligibility checks in the CAS: a state change or dialog
+        // invalidation can occur after the preceding read.
+        let sql = pool.sql("UPDATE gb_playback_recovery SET last_cseq = ? WHERE stream_id = ? AND last_cseq = ? AND state IN ('active', 'cleanup_pending') AND local_tag IS NOT NULL AND LENGTH(local_tag) > 0 AND remote_tag IS NOT NULL AND LENGTH(remote_tag) > 0");
         let result = crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql)
                 .bind(next)

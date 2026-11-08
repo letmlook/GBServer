@@ -74,6 +74,43 @@ async fn exercise(pool: Pool) {
         exhausted.last_cseq
     );
     journal::delete(&pool, &exhausted.stream_id).await.unwrap();
+    for (state, local, remote) in [
+        ("inviting", Some("local"), Some("remote")),
+        ("active", None, Some("remote")),
+        ("active", Some("local"), Some("")),
+        ("local_cleaned", Some("local"), Some("remote")),
+    ] {
+        let mut incomplete = sample_record();
+        incomplete.state = state.into();
+        incomplete.local_tag = local.map(str::to_string);
+        incomplete.remote_tag = remote.map(str::to_string);
+        journal::insert(&pool, &incomplete).await.unwrap();
+        assert_eq!(
+            journal::reserve_cseq(&pool, &incomplete.stream_id)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            journal::get(&pool, &incomplete.stream_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .last_cseq,
+            1
+        );
+        journal::delete(&pool, &incomplete.stream_id).await.unwrap();
+    }
+    let mut pending = sample_record();
+    pending.state = "cleanup_pending".into();
+    journal::insert(&pool, &pending).await.unwrap();
+    assert_eq!(
+        journal::reserve_cseq(&pool, &pending.stream_id)
+            .await
+            .unwrap(),
+        Some(2)
+    );
+    journal::delete(&pool, &pending.stream_id).await.unwrap();
 }
 
 #[tokio::test]
