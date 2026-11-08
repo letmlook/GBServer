@@ -4,6 +4,9 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：当前代码的隔离 SQLite 后端实测 `/api/server/version`、
+`/api/server/system/info` 与 `/api/openapi.json` 的版本均为 `2.0.0`。
+
 2026-11-08，基线 `986f762`：`web/npm run build` 通过；隔离 SQLite 后端直接提供
 生产构建页面，Chromium 的 smoke、dashboard、deviceControl、channelPlayStop 共
 32/32 通过。设备控制与播放弹窗部分用例使用模拟 HTTP 响应，不能证明真实设备或
