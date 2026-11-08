@@ -4,6 +4,10 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：隔离 SQLite 后端与 Vite 开发代理下重跑
+`playbackSeekRange.spec.ts`，4/4 通过；结合下方生产同源部署全套结果，回放测试
+的 API 前缀判定已分别覆盖 `/dev-api` 和 `/api`。这些用例使用模拟 HTTP 响应。
+
 2026-11-08：Docker Desktop Linux/ARM64 的 release 后端容器、隔离 SQLite、独立
 ZLM 和 RTP SIP Mock（含自动报警）下，完整 Chromium 套件 92/92 通过，包含新录像、
 FLV、WebRTC 和代理页面；WebRTC ICE connected、解码 3 帧。首次运行 89 通过、3 失败，
