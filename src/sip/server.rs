@@ -7886,6 +7886,22 @@ f=v/1/96/1/2/1/1/0
         channel_id: &str,
         sdp_port: u16,
     ) -> Result<()> {
+        self.send_platform_invite_with_timeout(
+            platform_gb_id,
+            channel_id,
+            sdp_port,
+            Duration::from_secs(15),
+        )
+        .await
+    }
+
+    async fn send_platform_invite_with_timeout(
+        &self,
+        platform_gb_id: &str,
+        channel_id: &str,
+        sdp_port: u16,
+        timeout: Duration,
+    ) -> Result<()> {
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
@@ -7896,11 +7912,7 @@ f=v/1/96/1/2/1/1/0
             .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
         let server_port = platform.server_port.unwrap_or(5060) as u16;
 
-        let call_id = format!(
-            "plat_{}_{}",
-            platform_gb_id,
-            chrono::Utc::now().timestamp_millis()
-        );
+        let call_id = format!("plat_{}_{}", platform_gb_id, uuid::Uuid::new_v4().simple());
         let branch = generate_branch();
         let cseq = cseq_header(1, "INVITE");
         let from_tag = generate_tag();
@@ -7925,10 +7937,11 @@ f=v/1/96/1/2/1/1/0
         // SSRC 也改为按会话分配：所有通道共用常量 0100000001 时，
         // 媒体面无法区分同时拉取的多路流。
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
-        let ssrc = self
-            .ssrc_manager()
-            .try_allocate(channel_id, channel_id, "play")
+        let lease = self
+            .ssrc_manager
+            .try_lease(platform_gb_id, channel_id, "play")
             .ok_or_else(|| anyhow::anyhow!("无法分配 SSRC：编号已用尽或域标识无效"))?;
+        let ssrc = lease.ssrc().to_string();
         let sdp = build_invite_sdp(&self.config.ip, sdp_port, "Play", Some(&ssrc));
 
         // 平台侧：
@@ -7952,12 +7965,55 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", channel_id, server_ip, server_port);
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        if let Err(error) = self.send_request_to(addr, &message).await {
-            self.ssrc_manager().release(&ssrc);
+        self.session_manager
+            .create(&call_id, platform_gb_id, channel_id, "Play")
+            .await;
+        self.session_manager
+            .set_invite_context(&call_id, from.clone(), 1, addr)
+            .await;
+        self.register_outbound_invite(
+            &call_id,
+            platform_gb_id,
+            channel_id,
+            StreamType::Play,
+            addr,
+            &from_tag,
+            1,
+            sdp_port,
+            Some(&ssrc),
+            Some(lease),
+        )
+        .await;
+        self.invite_session_manager
+            .set_zlm_stream_by_call_id(
+                &call_id,
+                &format!("cascade_{}_{}", platform_gb_id, channel_id),
+                "rtp",
+            )
+            .await;
+        let (tx, rx) = oneshot::channel();
+        self.pending_invites.insert(call_id.clone(), tx);
+        let result = match self.send_request_to(addr, &message).await {
+            Err(error) => Err(error),
+            Ok(_) => match tokio::time::timeout(timeout, rx).await {
+                Ok(Ok(response)) if response.status_code() == 200 => Ok(()),
+                Ok(Ok(response)) => Err(InviteRejected {
+                    status: response.status_code(),
+                    reason: response.reason,
+                }
+                .into()),
+                Ok(Err(_)) => Err(anyhow::anyhow!("级联 INVITE 应答通道关闭")),
+                Err(_) => Err(anyhow::anyhow!("级联 INVITE 应答超时")),
+            },
+        };
+        if let Err(error) = result {
+            self.pending_invites.remove(&call_id);
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
             return Err(error);
         }
         tracing::info!(
-            "Sent platform INVITE for channel {} to platform {} at {}",
+            "Platform accepted INVITE for channel {} to platform {} at {}",
             channel_id,
             platform_gb_id,
             addr
@@ -9037,6 +9093,40 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cascade_invite_timeout_releases_session_and_ssrc() {
+        let state = crate::test_support::app_state().await;
+        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let remote_port = remote.local_addr().unwrap().port();
+        let crate::db::Pool::Sqlite(pool) = &state.pool else {
+            panic!("test requires sqlite")
+        };
+        sqlx::query(
+            "INSERT INTO gb_platform (server_gb_id, server_ip, server_port) VALUES (?, ?, ?)",
+        )
+        .bind("cascade-test")
+        .bind("127.0.0.1")
+        .bind(i64::from(remote_port))
+        .execute(pool)
+        .await
+        .unwrap();
+        let server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
+        *server.socket.write().await =
+            Some(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap()));
+        let result = server
+            .send_platform_invite_with_timeout(
+                "cascade-test",
+                "channel",
+                30001,
+                Duration::from_millis(30),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(server.ssrc_manager().active_count(), 0);
+        assert!(server.pending_invites.is_empty());
+        assert_eq!(server.invite_session_manager.total_count().await, 0);
+    }
 
     #[test]
     fn playback_call_ids_are_unique_for_concurrent_requests() {
