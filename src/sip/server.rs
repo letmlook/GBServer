@@ -2104,21 +2104,21 @@ impl SipServer {
                     db_device::check_sqlite_device_limit(pool, &device_id, sqlite_max_devices).await
                 {
                     tracing::warn!("REGISTER rejected: {}", e);
+                    let response = Parser::generate_response(
+                        503,
+                        "Service Unavailable",
+                        &[
+                            ("Via", &via),
+                            ("From", &from),
+                            ("To", &to),
+                            ("Call-ID", &call_id),
+                            ("CSeq", &cseq),
+                        ],
+                        None,
+                    );
+                    Self::send_response(socket, addr, &response).await?;
+                    return Ok(());
                 }
-                let response = Parser::generate_response(
-                    503,
-                    "Service Unavailable",
-                    &[
-                        ("Via", &via),
-                        ("From", &from),
-                        ("To", &to),
-                        ("Call-ID", &call_id),
-                        ("CSeq", &cseq),
-                    ],
-                    None,
-                );
-                Self::send_response(socket, addr, &response).await?;
-                return Ok(());
             }
 
             let ip_str = addr.ip().to_string();
