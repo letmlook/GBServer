@@ -61,12 +61,13 @@
 
     <el-card v-if="isAdmin" class="recovery-card" data-testid="playback-recovery">
       <template #header><span>待清理的回放会话</span></template>
-      <p class="recovery-note">回放清理后设备是否执行仍需确认。当前进程的待清理记录可能在重启后丢失；已持久化的记录在重启后暂不能重试。</p>
+      <p class="recovery-note">回放清理后设备是否执行仍需确认。当前进程的待清理记录可能在重启后丢失；已持久化的记录在重启后暂不能重试。信令地址匹配不代表对话可恢复。</p>
       <el-alert v-if="recoveryError" :title="recoveryError" type="error" :closable="false" show-icon />
       <el-table table-layout="auto" :data="recoveryRows" v-loading="recoveryLoading" stripe empty-text="暂无待清理会话">
         <el-table-column prop="deviceId" label="设备 ID" min-width="170" show-overflow-tooltip />
         <el-table-column prop="channelId" label="通道 ID" min-width="170" show-overflow-tooltip />
         <el-table-column prop="streamId" label="流 ID" min-width="190" show-overflow-tooltip />
+        <el-table-column label="信令地址" min-width="140"><template #default="{ row }">{{ row.signalingRoute === 'matched' ? '信令地址匹配' : row.signalingRoute === 'unverified' ? '未核实' : '—' }}</template></el-table-column>
         <el-table-column label="设备结果" width="120"><template #default>未确认</template></el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }"><span v-if="row.retryable === false" :title="row.retryReason">待对话恢复</span><el-button v-else link type="primary" :loading="retrying === row.streamId" :disabled="retrying !== ''" @click="retryRecovery(row.streamId)">重试清理</el-button></template>

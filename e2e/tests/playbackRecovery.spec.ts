@@ -70,9 +70,12 @@ test('重启后保留的记录显示待恢复且不能发送重试', async ({ pa
     code: 0, msg: '成功', data: { id: 1, username: 'admin', role: { id: 1, name: 'admin', authority: '0' } }
   } }))
   await page.route('**/playback/recovery?*', route => route.fulfill({ json: {
-    code: 0, msg: '成功', data: { total: 1, offset: 0, limit: 20, items: [{
+    code: 0, msg: '成功', data: { total: 2, offset: 0, limit: 20, items: [{
       streamId: 'persisted-stream', deviceId: 'dev', channelId: 'ch', callId: 'call', status: 'recovery_required',
-      deviceResult: 'unconfirmed', retryable: false, retryReason: '已保存的 SIP 对话尚未恢复，暂不能重试'
+      deviceResult: 'unconfirmed', retryable: false, retryReason: '已保存的 SIP 对话尚未恢复，暂不能重试', signalingRoute: 'matched'
+    }, {
+      streamId: 'unverified-stream', deviceId: 'dev2', channelId: 'ch2', callId: 'call2', status: 'recovery_required',
+      deviceResult: 'unconfirmed', retryable: false, signalingRoute: 'unverified'
     }] }
   } }))
   await page.route('**/playback/recovery/**/retry', route => { retries++; return route.abort() })
@@ -80,6 +83,9 @@ test('重启后保留的记录显示待恢复且不能发送重试', async ({ pa
   const card = page.getByTestId('playback-recovery')
   await expect(card).toContainText('persisted-stream')
   await expect(card).toContainText('待对话恢复')
+  await expect(card).toContainText('信令地址匹配')
+  await expect(card.getByRole('row').filter({ hasText: 'unverified-stream' })).toContainText('未核实')
+  await expect(card).toContainText('匹配不代表对话可恢复')
   await expect(card.getByRole('button', { name: '重试清理' })).toHaveCount(0)
   expect(retries).toBe(0)
 })

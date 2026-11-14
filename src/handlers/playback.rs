@@ -46,7 +46,7 @@ mod command_state_tests {
 
     #[tokio::test]
     async fn recovery_lists_persisted_dialog_as_not_retryable_after_restart() {
-        let (state, _, active_stream) = state_with_session().await;
+        let (mut state, _, active_stream) = state_with_session().await;
         crate::db::playback_recovery::ensure_table(&state.pool)
             .await
             .unwrap();
@@ -92,7 +92,42 @@ mod command_state_tests {
         assert_eq!(response["total"], 1);
         assert_eq!(response["items"][0]["streamId"], "persisted");
         assert_eq!(response["items"][0]["retryable"], false);
+        assert_eq!(response["items"][0]["signalingRoute"], "unverified");
         assert!(!response.to_string().contains("secret-remote-tag"));
+        let route = crate::db::playback_recovery::ObservedRoute {
+            stream_id: "persisted".into(),
+            peer_addr: "127.0.0.1:5060".into(),
+            transport: "udp".into(),
+        };
+        crate::db::playback_recovery::insert_observed_route(&state.pool, &route)
+            .await
+            .unwrap();
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        sip.device_manager()
+            .register_authenticated(
+                "device",
+                "127.0.0.1:5060".parse().unwrap(),
+                60,
+                crate::sip::gb28181::register_nonce::RegistrationIngress::Udp,
+            )
+            .await;
+        state.sip_server = Some(sip);
+        let response = playback_recovery_list(
+            State(state.clone()),
+            headers.clone(),
+            Query(RecoveryListQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0
+        .data
+        .unwrap();
+        assert_eq!(response["items"][0]["signalingRoute"], "matched");
+        assert_eq!(response["items"][0]["retryable"], false);
         let retry = playback_recovery_retry(State(state), headers, Path("persisted".into()))
             .await
             .unwrap()
@@ -1744,12 +1779,36 @@ pub async fn playback_recovery_list(
     let total = rows.len();
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(100).clamp(1, 100);
-    let items: Vec<_> = rows
+    let mut items: Vec<_> = rows
         .into_iter()
         .skip(offset)
         .take(limit)
         .map(|(_, item)| item)
         .collect();
+    for item in &mut items {
+        if item["status"] != "recovery_required" {
+            continue;
+        }
+        let stream_id = item["streamId"].as_str().unwrap_or_default();
+        let device_id = item["deviceId"].as_str().unwrap_or_default();
+        let route =
+            crate::db::playback_recovery::get_observed_route(&state.pool, stream_id).await?;
+        let registration = if let Some(sip) = state.sip_server.as_ref() {
+            sip.device_manager()
+                .authenticated_registration(device_id)
+                .await
+        } else {
+            None
+        };
+        let matches = route.as_ref().is_some_and(|route| {
+            crate::sip::gb28181::recovery_routing::matches_registration_route(
+                &route.peer_addr,
+                &route.transport,
+                registration,
+            )
+        });
+        item["signalingRoute"] = serde_json::json!(if matches { "matched" } else { "unverified" });
+    }
     Ok(Json(ApiResult::success(
         serde_json::json!({"items": items, "total": total, "offset": offset, "limit": limit}),
     )))

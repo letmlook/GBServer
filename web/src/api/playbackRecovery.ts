@@ -10,6 +10,7 @@ export interface PlaybackRecoveryItem {
   deviceResult: 'unconfirmed'
   retryable: boolean
   retryReason?: string
+  signalingRoute?: 'matched' | 'unverified'
 }
 
 export function listPlaybackRecovery(offset: number, limit: number) {

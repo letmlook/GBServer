@@ -1,6 +1,27 @@
 //! Conservative subset of SIP routing that can be stored without URI passwords.
 //! Unsupported or ambiguous headers are rejected rather than rewritten.
 use super::invite_session::SipRoutingHeaders;
+use super::register_nonce::RegistrationIngress;
+
+/// Necessary route check only: an address and shared-password registration are
+/// not by themselves proof of a unique device identity or a restored dialog.
+pub fn matches_registration_route(
+    observed_peer: &str,
+    observed_transport: &str,
+    registration: Option<(std::net::SocketAddr, RegistrationIngress)>,
+) -> bool {
+    let (peer, ingress) = match registration {
+        Some(proof) => proof,
+        None => return false,
+    };
+    if observed_peer.parse::<std::net::SocketAddr>().ok() != Some(peer) {
+        return false;
+    }
+    matches!(
+        (observed_transport, ingress),
+        ("udp", RegistrationIngress::Udp) | ("tcp", RegistrationIngress::Tcp(_))
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafeRouting {
