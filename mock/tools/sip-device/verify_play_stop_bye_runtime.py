@@ -95,6 +95,9 @@ def main():
                 stopped = api(f"/api/play/stop/{DEVICE_ID}/{channel}", token=token)
                 if stopped.get("code") != 0 or not (stopped.get("data") or {}).get("callId"):
                     raise AssertionError("play stop failed: " + json.dumps(stopped, ensure_ascii=False))
+                cleanup = stopped["data"].get("mediaCleanup")
+                if cleanup != {"rtp": "accepted", "streams": "accepted"}:
+                    raise AssertionError("media cleanup not accepted: " + json.dumps(cleanup, ensure_ascii=False))
                 assert api(ssrc_path, token=token)["code"] != 0, "SSRC query succeeded after stop"
 
                 deadline = time.monotonic() + 3

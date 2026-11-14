@@ -30,7 +30,7 @@ test('通道播放停止失败不能显示已停止，重试成功后关闭不�
       contentType: 'application/json',
       body: JSON.stringify(stopCalls === 1 || stopCalls === 4
         ? { code: 500, msg: '模拟 BYE 发送失败', data: null }
-        : { code: 0, msg: '成功', data: null })
+        : { code: 0, msg: '成功', data: { mediaCleanup: { rtp: 'failed', streams: 'accepted' } } })
     })
   })
 
@@ -54,7 +54,7 @@ test('通道播放停止失败不能显示已停止，重试成功后关闭不�
   await stopButton.click()
   await accepted
   await expect.poll(() => stopCalls).toBe(2)
-  await expect(page.getByText('已停止', { exact: true })).toBeVisible()
+  await expect(page.getByText('停止命令已发送，但媒体清理未确认')).toBeVisible()
 
   await dialog.getByRole('button', { name: '关闭此对话框' }).click()
   await page.waitForTimeout(500)

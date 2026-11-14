@@ -35,7 +35,7 @@ export function startPlay(deviceId: string, channelId: string) {
 }
 
 export function stopPlay(deviceId: string, channelId: string) {
-  return request<ApiResult>({
+  return request<ApiResult<{ callId: string; mediaCleanup?: { rtp: string; streams: string } }>>({
     method: 'get',
     url: `/play/stop/${deviceId}/${channelId}`
   })

@@ -45,6 +45,46 @@ fn play_sip_error(
 
 #[cfg(test)]
 mod media_diagnostics_tests {
+    #[tokio::test]
+    async fn stop_reports_each_media_cleanup_request_independently() {
+        use axum::{routing::get, Json, Router};
+        let app = Router::new()
+            .route(
+                "/index/api/closeRtpServer",
+                get(|| async { Json(serde_json::json!({"code":0,"hit":1})) }),
+            )
+            .route(
+                "/index/api/close_streams",
+                get(|| async { Json(serde_json::json!({"code":-1,"msg":"failed"})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = crate::zlm::ZlmClient::new("127.0.0.1", port, "test-secret");
+        let result = super::cleanup_live_media(Some(&client), "device_channel").await;
+        assert_eq!(result["rtp"], "accepted");
+        assert_eq!(result["streams"], "failed");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stop_reports_unreachable_media_node_without_exposing_secret() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = crate::zlm::ZlmClient::new("127.0.0.1", port, "private-zlm-secret");
+        let result = super::cleanup_live_media(Some(&client), "device_channel").await;
+        assert_eq!(result["rtp"], "failed");
+        assert_eq!(result["streams"], "failed");
+        assert!(!result.to_string().contains("private-zlm-secret"));
+    }
+
+    #[tokio::test]
+    async fn stop_reports_missing_media_node() {
+        let result = super::cleanup_live_media(None, "device_channel").await;
+        assert_eq!(result["rtp"], "unavailable");
+        assert_eq!(result["streams"], "unavailable");
+    }
     #[test]
     fn open_failure_identifies_node_stream_and_request_without_secret() {
         let client = crate::zlm::ZlmClient::new("127.0.0.1", 8080, "private-zlm-secret");
@@ -606,6 +646,33 @@ pub async fn play_start(
     Json(ApiResult::error("未配置 ZLM 媒体节点，无法发起点播"))
 }
 
+async fn cleanup_live_media(
+    client: Option<&crate::zlm::ZlmClient>,
+    stream_id: &str,
+) -> serde_json::Value {
+    let Some(client) = client else {
+        return serde_json::json!({"rtp": "unavailable", "streams": "unavailable"});
+    };
+    let rtp = if client.close_rtp_server(stream_id).await.is_ok() {
+        "accepted"
+    } else {
+        "failed"
+    };
+    let streams = if client
+        .close_streams(None, Some("rtp"), Some(stream_id), true)
+        .await
+        .is_ok()
+    {
+        "accepted"
+    } else {
+        "failed"
+    };
+    if rtp == "failed" || streams == "failed" {
+        tracing::warn!(node = %client.ip, port = client.http_port, stream = %stream_id, rtp, streams, "ZLM 清理请求失败");
+    }
+    serde_json::json!({"rtp": rtp, "streams": streams})
+}
+
 /// GET /api/play/stop/{device_id}/{channel_id}
 ///
 /// 停止一路实时点播：关 ZLM 收流端口 + 发 SIP BYE。
@@ -619,9 +686,9 @@ pub async fn play_start(
         ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
     ),
     responses(
-        (status = 200, description = "成功仅表示 SIP BYE 已发送；发送失败返回业务错误（ZLM 清理已尝试）",
+        (status = 200, description = "成功表示 SIP BYE 已发送；mediaCleanup 分别报告 ZLM 清理请求状态，accepted 不表示流此前存在",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"callId":"abc-123"}})),
+         example = json!({"code":0,"msg":"成功","data":{"callId":"abc-123","mediaCleanup":{"rtp":"accepted","streams":"accepted"}}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -642,15 +709,8 @@ pub async fn play_stop(
         .stream_reconnect_manager()
         .mark_manual_stop(&stream_id);
 
-    // 1. 通知 ZLM 停止该流的接收
-    if let Some(ref zlm_client) = state.zlm_client {
-        let _ = zlm_client.close_rtp_server(&stream_id).await;
-        // 为了干净，把相关的 session 都踢掉
-        let _ = zlm_client
-            .close_streams(None, Some("rtp"), Some(&stream_id), true)
-            .await;
-        tracing::debug!("ZLM resources cleaned for stream={}", stream_id);
-    }
+    // 各项只表示 ZLM 是否接受请求，不推断流是否曾存在。
+    let media_cleanup = cleanup_live_media(state.zlm_client.as_deref(), &stream_id).await;
 
     // 2. 发送 SIP BYE 挂断设备的推流（使用 InviteSession 中的 Call-ID）
     // Phase 3.1: 删除 talk BYE fallback —— live 与 talk 是不同 session，
@@ -671,7 +731,9 @@ pub async fn play_stop(
                 call_id
             );
             // 返回 call_id 给调用方以便排查
-            return Json(ApiResult::success(serde_json::json!({"callId": call_id})));
+            return Json(ApiResult::success(
+                serde_json::json!({"callId": call_id, "mediaCleanup": media_cleanup}),
+            ));
         }
         Err(e) => {
             tracing::warn!("Failed to send session BYE for stream {}: {}", stream_id, e);

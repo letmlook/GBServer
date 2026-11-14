@@ -453,6 +453,12 @@ const playData = ref<PlayStartResult | null>(null)
 let activePlayTarget: { deviceId: string; channelId: string } | null = null
 let stopRequest: Promise<void> | null = null
 let closeStopWarningShown = false
+let mediaCleanupUnconfirmed = false
+
+function noteMediaCleanup(cleanup?: { rtp: string; streams: string }) {
+  mediaCleanupUnconfirmed = !!cleanup && (cleanup.rtp !== 'accepted' || cleanup.streams !== 'accepted')
+  if (mediaCleanupUnconfirmed) ElMessage.warning('停止命令已发送，但媒体清理未确认')
+}
 let closeCleanupRequested = false
 let playbackTask: Promise<void> | null = null
 let openGeneration = 0
@@ -630,7 +636,8 @@ async function onOpen() {
   if (pendingLateCleanup) {
     const target = pendingLateCleanup
     if (!lateCleanupRequest) {
-      lateCleanupRequest = stopPlay(target.deviceId, target.channelId).then(() => {
+      lateCleanupRequest = stopPlay(target.deviceId, target.channelId).then((result) => {
+        noteMediaCleanup(result.data?.mediaCleanup)
         if (pendingLateCleanup === target) pendingLateCleanup = null
       }).finally(() => { lateCleanupRequest = null })
     }
@@ -698,7 +705,8 @@ async function playChannel() {
     if (closeCleanupRequested) {
       const target = { deviceId, channelId }
       pendingLateCleanup = target
-      await stopPlay(deviceId, channelId).then(() => {
+      await stopPlay(deviceId, channelId).then((result) => {
+        noteMediaCleanup(result.data?.mediaCleanup)
         if (pendingLateCleanup === target) pendingLateCleanup = null
       }).catch(() => {
         if (!closeStopWarningShown) {
@@ -937,7 +945,7 @@ async function onStop() {
   }
   try {
     await stopChannel()
-    ElMessage.success('已停止')
+    if (!mediaCleanupUnconfirmed) ElMessage.success('已停止')
   } catch {
     // request 拦截器已展示具体失败原因；保留会话以供用户重试。
     playerStatus.value = 'error'
@@ -957,7 +965,8 @@ async function stopChannel() {
   if (!stopRequest) {
     const { deviceId, channelId } = activePlayTarget
     stopRequest = stopPlay(deviceId, channelId)
-      .then(() => {
+      .then((result) => {
+        noteMediaCleanup(result.data?.mediaCleanup)
         playerStatus.value = 'idle'
         playData.value = null
         activePlayTarget = null

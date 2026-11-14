@@ -606,15 +606,24 @@ async function onStop(cell: any) {
   if (flvVideo) { flvVideo.src = ''; flvVideo.style.display = 'none' }
   // 真正停流：后端会发 SIP BYE 并关闭 ZLM RTP server / 收流
   const target = cell?.deviceId && cell?.channelId ? cell : currentChannel.value
+  let cleanupUnconfirmed = false
   if (target?.deviceId && target?.channelId) {
-    await stopPlay(target.deviceId, target.channelId).catch((e) => {
+    try {
+      const result = await stopPlay(target.deviceId, target.channelId)
+      const cleanup = result.data?.mediaCleanup
+      cleanupUnconfirmed = !!cleanup && (cleanup.rtp !== 'accepted' || cleanup.streams !== 'accepted')
+    } catch (e) {
+      playerStatus.value = 'error'
+      playError.value = '停止未确认，请重试'
       ElMessage.warning(`停止流失败：${e instanceof Error ? e.message : String(e)}`)
-    })
+      return
+    }
   }
   buildGrid(cell, '')
   playError.value = ''
   playerStatus.value = 'idle'
-  ElMessage.success('已停止')
+  if (cleanupUnconfirmed) ElMessage.warning('停止命令已发送，但媒体清理未确认')
+  else ElMessage.success('已停止')
 }
 
 onBeforeUnmount(() => {
