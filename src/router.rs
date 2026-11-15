@@ -103,7 +103,25 @@ pub fn app(state: AppState) -> Router<AppState> {
     let openapi = crate::openapi::build_openapi();
     let path_count = openapi.paths.paths.len();
     let app = app
-        .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/api/openapi.json", openapi));
+        .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/api/openapi.json", openapi))
+        .route(
+            "/api-docs",
+            axum::routing::get(|| async {
+                axum::response::Html(include_str!("openapi/assets/docs.html"))
+            }),
+        )
+        .route(
+            "/api-docs/scalar.js",
+            axum::routing::get(|| async {
+                (
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "text/javascript; charset=utf-8",
+                    )],
+                    include_str!("openapi/assets/scalar.js"),
+                )
+            }),
+        );
     tracing::info!(
         "OpenAPI 文档已挂载：/swagger-ui（规范：/api/openapi.json），当前已收录 {} 条路径",
         path_count
@@ -223,6 +241,22 @@ mod tests {
             .await
             .expect("GET /swagger-ui");
         assert_eq!(swagger.status().as_u16(), 200, "/swagger-ui 未挂载");
+        let docs = reqwest::get(format!("{}/api-docs", base)).await.unwrap();
+        assert_eq!(docs.status().as_u16(), 200);
+        let page = docs.text().await.unwrap();
+        assert!(page.contains("/api-docs/scalar.js"));
+        assert!(page.contains("/api/openapi.json"));
+        let asset = reqwest::get(format!("{}/api-docs/scalar.js", base))
+            .await
+            .unwrap();
+        assert_eq!(asset.status().as_u16(), 200);
+        assert!(asset
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript"));
 
         let resp = reqwest::get(format!("{}/api/openapi.json", base))
             .await

@@ -90,7 +90,7 @@
       <button
         class="topbar-platform"
         aria-label="接口文档"
-        title="API 接口文档（Swagger UI，可在页面内直接调用接口）"
+        title="API 接口文档（可在页面内直接调用接口）"
         @click="openApiDocs"
       >
         <svg viewBox="0 0 24 24" fill="none">
@@ -235,12 +235,12 @@ function goAlarm() {
   router.push('/alarm')
 }
 
-/// 打开后端提供的 Swagger UI（与前端同源，后端挂在 `/swagger-ui/`）。
+/// 打开后端提供的接口文档（与前端同源）。
 ///
 /// 用 `window.open` 而不是路由跳转：Swagger UI 是后端渲染的独立页面，
 /// 走 SPA 路由会被 404 兜底成前端页面。
 function openApiDocs() {
-  const url = `${window.location.origin}/swagger-ui/`
+  const url = `${window.location.origin}/api-docs`
   const win = window.open(url, '_blank', 'noopener')
   if (!win) {
     // 被浏览器拦截弹窗时，退化为当前标签页跳转
