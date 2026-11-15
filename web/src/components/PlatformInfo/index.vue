@@ -62,9 +62,9 @@
         <div class="proto-row">
           <dt>监听</dt>
           <dd class="proto-value mono">
-            {{ listenAddr(sipConfig.bind_ip || sipConfig.ip) }}:{{ sipConfig.port }}
+            {{ sipConfig.bind_ip || sipConfig.ip }}:{{ sipConfig.port }}
             <span class="meta">{{ sipConfig.tcp_enabled ? 'UDP/TCP' : 'UDP' }}</span>
-            <button class="proto-copy" title="复制监听地址" @click="copy(listenAddr(sipConfig.bind_ip || sipConfig.ip) + ':' + sipConfig.port, '监听地址')">
+            <button class="proto-copy" title="复制监听地址" @click="copy((sipConfig.bind_ip || sipConfig.ip) + ':' + sipConfig.port, '监听地址')">
               <el-icon :size="12"><DocumentCopy /></el-icon>
             </button>
           </dd>
@@ -158,7 +158,7 @@ function listenAddr(raw: string | null | undefined): string {
 const serverAddr = computed(() => {
   const sip = props.sipConfig
   if (!sip) return '-'
-  return `${listenAddr(sip.bind_ip || sip.ip)}:${sip.port}`
+  return `${listenAddr(sip.ip)}:${sip.port}`
 })
 
 /**

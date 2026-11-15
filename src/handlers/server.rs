@@ -865,6 +865,14 @@ fn detect_outbound_ip_cached() -> Option<IpAddr> {
     ip
 }
 
+fn advertised_host_ip(configured: Option<&str>, detected: Option<IpAddr>) -> Option<String> {
+    configured
+        .and_then(|value| value.parse::<IpAddr>().ok())
+        .filter(|ip| !ip.is_unspecified())
+        .or(detected)
+        .map(|ip| ip.to_string())
+}
+
 /// GET /api/server/media_server/list
 #[utoipa::path(
     get,
@@ -1263,7 +1271,10 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
     // 本机对外 IP：dashboard 的「协议接入」面板要展示给 admin
     // 用来填到设备/下级平台里。如果 `cfg.sip.ip` 是通配地址，
     // 这里返回的是 OS 自动选出的可路由 NIC IP，比 sip.ip 更直观。
-    let host_ip = detect_outbound_ip_cached().map(|ip| ip.to_string());
+    let host_ip = advertised_host_ip(
+        state.config.sip.as_ref().map(|sip| sip.ip.as_str()),
+        detect_outbound_ip_cached(),
+    );
 
     // ---- 协议接入配置（GB28181 / JT1078） ----
     // dashboard 的「协议接入」面板直接展示本平台配置，供 admin 把
@@ -2584,6 +2595,19 @@ mod media_server_contract_tests {
 
 #[cfg(test)]
 mod system_info_contract_tests {
+    #[test]
+    fn advertised_ip_prefers_configured_address_and_falls_back_for_wildcard() {
+        use super::advertised_host_ip;
+        let detected = Some("172.18.0.3".parse().unwrap());
+        assert_eq!(
+            advertised_host_ip(Some("192.168.3.87"), detected).as_deref(),
+            Some("192.168.3.87")
+        );
+        assert_eq!(
+            advertised_host_ip(Some("0.0.0.0"), detected).as_deref(),
+            Some("172.18.0.3")
+        );
+    }
     use super::*;
     use crate::test_support::app_state;
 
